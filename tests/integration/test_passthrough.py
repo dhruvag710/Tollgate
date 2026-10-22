@@ -1,4 +1,7 @@
-"""Phase 1.1: non-streaming passthrough, driven by the official openai SDK."""
+"""Phase 1.1: non-streaming passthrough, driven by the official openai SDK.
+
+Streaming lives in test_streaming.py.
+"""
 
 import uuid
 from collections.abc import Callable
@@ -11,9 +14,10 @@ import pytest
 from fastapi import FastAPI
 
 from mock_provider.app import create_app as create_mock_app
-from tests.helpers import TEST_PROVIDERS, run_server, write_providers
+from tests.helpers import TEST_PROVIDERS, MemoryLedger, run_server, write_providers
 from tollgate.config import Settings
 from tollgate.main import create_app
+from tollgate.ratelimit.estimate import estimate_prompt_tokens
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 
@@ -64,13 +68,26 @@ async def test_missing_messages_is_400(sdk: openai.AsyncOpenAI) -> None:
     assert exc.value.code == "invalid_request"
 
 
-async def test_stream_rejected_until_phase_1_3(sdk: openai.AsyncOpenAI) -> None:
-    with pytest.raises(openai.BadRequestError) as exc:
-        await sdk.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES, stream=True)
-    assert exc.value.code == "stream_not_supported"
+async def test_success_records_reported_usage(
+    sdk: openai.AsyncOpenAI, ledger: MemoryLedger
+) -> None:
+    raw = await sdk.chat.completions.with_raw_response.create(
+        model="gpt-4o-mini", messages=MESSAGES
+    )
+    resp = raw.parse()
+    assert resp.usage is not None
+    (event,) = ledger.events
+    assert event.request_id == raw.headers["x-request-id"]
+    assert (event.model, event.provider, event.status) == ("gpt-4o-mini", "mock", "success")
+    assert (event.prompt_tokens, event.completion_tokens) == (
+        resp.usage.prompt_tokens,
+        resp.usage.completion_tokens,
+    )
+    assert not event.usage_estimated
+    assert event.ttft_ms is None
 
 
-async def test_upstream_500_passes_through(sdk: openai.AsyncOpenAI) -> None:
+async def test_upstream_500_passes_through(sdk: openai.AsyncOpenAI, ledger: MemoryLedger) -> None:
     with pytest.raises(openai.InternalServerError) as exc:
         await sdk.chat.completions.create(
             model="gpt-4o-mini",
@@ -78,6 +95,8 @@ async def test_upstream_500_passes_through(sdk: openai.AsyncOpenAI) -> None:
             extra_headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "500"},
         )
     assert exc.value.response.headers["x-tollgate-provider"] == "mock"
+    (event,) = ledger.events
+    assert (event.status, event.prompt_tokens, event.completion_tokens) == ("provider_error", 0, 0)
 
 
 async def test_upstream_429_keeps_retry_after(client: httpx.AsyncClient) -> None:
@@ -129,11 +148,16 @@ async def test_healthz_and_unknown_route(client: httpx.AsyncClient) -> None:
 
 
 def _gateway_with(
-    tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response], **overrides: Any
+    tmp_path: Path,
+    handler: Callable[[httpx.Request], httpx.Response],
+    ledger: MemoryLedger | None = None,
+    **overrides: Any,
 ) -> FastAPI:
     config = write_providers(tmp_path, "http://upstream/v1", **overrides)
     return create_app(
-        Settings(providers_config=config), upstream_transport=httpx.MockTransport(handler)
+        Settings(providers_config=config),
+        upstream_transport=httpx.MockTransport(handler),
+        ledger=ledger,
     )
 
 
@@ -180,9 +204,32 @@ async def test_transport_failures(tmp_path: Path, exc: Exception, status: int, c
     def handler(request: httpx.Request) -> httpx.Response:
         raise exc
 
-    r = await _post(_gateway_with(tmp_path, handler))
+    ledger = MemoryLedger()
+    r = await _post(_gateway_with(tmp_path, handler, ledger))
     assert r.status_code == status
     assert r.json()["error"]["code"] == code
+    assert r.headers["x-tollgate-provider"] == "mock"
+    (event,) = ledger.events
+    assert (event.status, event.prompt_tokens, event.usage_estimated) == (
+        "provider_error",
+        0,
+        False,
+    )
+
+
+async def test_missing_usage_is_estimated(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        message = {"role": "assistant", "content": "hello world"}
+        return httpx.Response(200, json={"id": "x", "choices": [{"index": 0, "message": message}]})
+
+    ledger = MemoryLedger()
+    r = await _post(_gateway_with(tmp_path, handler, ledger))
+    assert r.status_code == 200
+    (event,) = ledger.events
+    assert event.status == "success"
+    assert event.usage_estimated
+    assert event.prompt_tokens == estimate_prompt_tokens(MESSAGES, "gpt-4o-mini")
+    assert event.completion_tokens == 2
 
 
 @pytest.mark.parametrize(

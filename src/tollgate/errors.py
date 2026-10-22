@@ -8,6 +8,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from tollgate.providers.base import UpstreamResponse
+
 
 class TollgateError(Exception):
     def __init__(
@@ -36,6 +38,32 @@ def error_response(exc: TollgateError) -> JSONResponse:
         status_code=exc.status_code,
         headers=exc.headers,
     )
+
+
+def upstream_error_response(upstream: UpstreamResponse, provider: str) -> JSONResponse:
+    """Relay an upstream error status to the client in OpenAI shape."""
+    headers = {"X-Tollgate-Provider": provider}
+    if upstream.status_code in (401, 403):
+        # A provider auth failure is our misconfiguration, not the client's bad key.
+        return JSONResponse(
+            error_body(
+                f"Upstream provider {provider!r} rejected Tollgate's credentials",
+                "api_error",
+                "upstream_auth_failed",
+            ),
+            status_code=502,
+            headers=headers,
+        )
+    if upstream.retry_after:
+        headers["Retry-After"] = upstream.retry_after
+    body = upstream.body
+    if not isinstance(body.get("error"), dict):
+        body = error_body(
+            f"Upstream provider {provider!r} returned HTTP {upstream.status_code}",
+            "api_error",
+            "upstream_error",
+        )
+    return JSONResponse(body, status_code=upstream.status_code, headers=headers)
 
 
 def _type_for_status(status_code: int) -> str:

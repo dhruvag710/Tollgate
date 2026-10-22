@@ -215,10 +215,11 @@ CREATE TABLE usage_events (
   model              TEXT NOT NULL,
   prompt_tokens      INT  NOT NULL DEFAULT 0,
   completion_tokens  INT  NOT NULL DEFAULT 0,
+  usage_estimated    BOOLEAN NOT NULL DEFAULT FALSE,     -- TRUE: provider reported no usage; tokens are tiktoken estimates
   cost_usd           NUMERIC(12,6) NOT NULL DEFAULT 0,
   saved_cost_usd     NUMERIC(12,6) NOT NULL DEFAULT 0,   -- v2: cache hits
   cache_status       TEXT NOT NULL DEFAULT 'MISS',       -- HIT | MISS | BYPASS
-  status             TEXT NOT NULL,              -- success | provider_error | client_disconnect | rate_limited
+  status             TEXT NOT NULL,              -- success | provider_error | client_disconnect | gateway_shutdown | rate_limited
   attempts           INT  NOT NULL DEFAULT 1,
   latency_ms         INT,
   ttft_ms            INT,                        -- time to first token

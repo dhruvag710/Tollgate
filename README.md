@@ -3,8 +3,17 @@
 A self-hosted, OpenAI-compatible LLM gateway. Point your OpenAI SDK at Tollgate by
 changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** phases 1.1 (skeleton + non-streaming passthrough) and 1.2 (mock provider).
-Auth, rate limiting, streaming and metering come in later phases.
+**Status:** phases 1.1–1.3: passthrough for streaming and non-streaming chat
+completions, and the mock provider. Auth, rate limiting and the persistent usage ledger
+come in later phases; until then each request's usage event is written to the log.
+
+Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
+always asks the provider for the final usage chunk, but only forwards it if the client
+asked for it too. If the client disconnects, the upstream request is cancelled and the
+partial usage is recorded, estimated with tiktoken. A stream cut off by a gateway shutdown
+is handled the same way and recorded as `gateway_shutdown`. An upstream failure after the first
+event ends the stream with an OpenAI-style error event; a failure before it is a normal
+HTTP error.
 
 ## Quickstart
 
@@ -24,6 +33,11 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="anything")
 client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+
+for chunk in client.chat.completions.create(
+    model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}], stream=True
+):
+    print(chunk.choices[0].delta.content or "", end="")
 ```
 
 ## Mock provider
@@ -39,6 +53,7 @@ Behaviour is set by env var at startup or per request with headers (`X-Mock-Late
 
 ```sh
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-pytest --cov
+pytest --cov                  # everything, including perf checks
+pytest -m "not perf" --cov    # what CI runs: perf checks depend on the machine
 ruff check . && ruff format --check . && mypy
 ```

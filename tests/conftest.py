@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 
 from mock_provider.app import create_app as create_mock_app
-from tests.helpers import TEST_PROVIDERS
+from tests.helpers import TEST_PROVIDERS, MemoryLedger
 from tollgate.config import Settings
 from tollgate.main import create_app
 
@@ -17,11 +17,17 @@ def mock_app() -> FastAPI:
 
 
 @pytest.fixture
-async def gateway(mock_app: FastAPI) -> AsyncIterator[FastAPI]:
+def ledger() -> MemoryLedger:
+    return MemoryLedger()
+
+
+@pytest.fixture
+async def gateway(mock_app: FastAPI, ledger: MemoryLedger) -> AsyncIterator[FastAPI]:
     """Gateway whose upstream calls go in-process to the mock provider."""
     app = create_app(
         Settings(providers_config=TEST_PROVIDERS),
         upstream_transport=httpx.ASGITransport(app=mock_app),
+        ledger=ledger,
     )
     async with app.router.lifespan_context(app):
         yield app

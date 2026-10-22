@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pyyaml>=6.0",
+    "tiktoken>=0.8",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,9 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "perf: timing-sensitive checks that depend on the machine; CI skips them (-m 'not perf')",
+]
 
 [tool.coverage.run]
 source = ["src/tollgate"]

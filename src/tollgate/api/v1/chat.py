@@ -1,16 +1,20 @@
-"""POST /v1/chat/completions. Phase 1.1: non-streaming passthrough."""
+"""POST /v1/chat/completions: streaming and non-streaming passthrough."""
 
 import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tollgate.config import Settings
-from tollgate.deps import get_router, get_settings
-from tollgate.errors import TollgateError, error_body
+from tollgate.deps import get_ledger, get_router, get_settings, get_streams
+from tollgate.errors import TollgateError, upstream_error_response
+from tollgate.providers.base import Provider
+from tollgate.ratelimit.estimate import generated_text
 from tollgate.routing.router import Router
+from tollgate.streaming.sse import OpenStreams, SSEProxyResponse
+from tollgate.usage.ledger import Ledger, UsageMeter, parse_usage
 
 router = APIRouter()
 
@@ -23,6 +27,7 @@ class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[dict[str, Any]] = Field(min_length=1)
     stream: bool = False
+    stream_options: dict[str, Any] | None = None
 
 
 async def read_json_body(request: Request, limit: int) -> dict[str, Any]:
@@ -58,7 +63,9 @@ async def chat_completions(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     router_: Annotated[Router, Depends(get_router)],
-) -> JSONResponse:
+    ledger: Annotated[Ledger, Depends(get_ledger)],
+    streams: Annotated[OpenStreams, Depends(get_streams)],
+) -> Response:
     body = await read_json_body(request, settings.max_request_body_bytes)
     try:
         req = ChatCompletionRequest.model_validate(body)
@@ -68,37 +75,55 @@ async def chat_completions(
         raise TollgateError(
             400, f"Invalid request: {loc}: {err['msg']}", "invalid_request_error", "invalid_request"
         ) from exc
-    if req.stream:
-        # Streaming passthrough arrives in phase 1.3.
-        raise TollgateError(
-            400, "stream=true is not supported yet", "invalid_request_error", "stream_not_supported"
-        )
 
     provider = router_.route(req.model)
-    upstream = await provider.chat_completion(body, client_headers=request.headers)
-    headers = {"X-Tollgate-Provider": provider.name}
+    meter = UsageMeter(
+        ledger=ledger,
+        request_id=request.state.request_id,
+        started_at=request.state.started_at,
+        model=req.model,
+        provider=provider.name,
+        messages=req.messages,
+    )
+    if not req.stream:
+        return await _complete(request, body, provider, meter)
 
-    if upstream.status_code < 400:
-        return JSONResponse(upstream.body, status_code=upstream.status_code, headers=headers)
+    client_options = req.stream_options or {}
+    return SSEProxyResponse(
+        provider=provider,
+        # Always ask upstream for the final usage chunk; keep the client's other options.
+        body={**body, "stream_options": {**client_options, "include_usage": True}},
+        client_headers=request.headers,
+        forward_usage_chunk=bool(client_options.get("include_usage")),
+        meter=meter,
+        streams=streams,
+    )
 
-    if upstream.status_code in (401, 403):
-        # A provider auth failure is our misconfiguration, not the client's bad key.
-        return JSONResponse(
-            error_body(
-                f"Upstream provider {provider.name!r} rejected Tollgate's credentials",
-                "api_error",
-                "upstream_auth_failed",
-            ),
-            status_code=502,
-            headers=headers,
+
+async def _complete(
+    request: Request, body: dict[str, Any], provider: Provider, meter: UsageMeter
+) -> Response:
+    try:
+        upstream = await provider.chat_completion(body, client_headers=request.headers)
+    except TollgateError:
+        await meter.record("provider_error")
+        raise
+    if upstream.status_code >= 400:
+        await meter.record("provider_error")
+        return upstream_error_response(upstream, provider.name)
+
+    reported = parse_usage(upstream.body.get("usage"))
+    generated = None
+    if reported is None:
+        choices = upstream.body.get("choices")
+        generated = "".join(
+            generated_text(c.get("message"))
+            for c in (choices if isinstance(choices, list) else [])
+            if isinstance(c, dict)
         )
-    if upstream.retry_after:
-        headers["Retry-After"] = upstream.retry_after
-    body_out = upstream.body
-    if not isinstance(body_out.get("error"), dict):
-        body_out = error_body(
-            f"Upstream provider {provider.name!r} returned HTTP {upstream.status_code}",
-            "api_error",
-            "upstream_error",
-        )
-    return JSONResponse(body_out, status_code=upstream.status_code, headers=headers)
+    await meter.record("success", reported=reported, generated=generated)
+    return JSONResponse(
+        upstream.body,
+        status_code=upstream.status_code,
+        headers={"X-Tollgate-Provider": provider.name},
+    )

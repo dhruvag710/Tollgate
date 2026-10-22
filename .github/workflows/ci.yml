@@ -7,17 +7,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/tiktoken
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tiktoken
+          key: tiktoken-o200k-cl100k
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: pytest --cov --cov-report=term-missing --cov-fail-under=85
+      # perf tests measure this machine's timings; shared runners are too noisy.
+      - run: pytest -m "not perf" --cov --cov-report=term-missing --cov-fail-under=85
 
   docker:
     runs-on: ubuntu-latest
