@@ -1,0 +1,70 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Defaults to the mock-only config so `docker compose up` needs no real keys.
+      # Set PROVIDERS_CONFIG=config/providers.yaml in .env to use real providers.
+      PROVIDERS_CONFIG: ${PROVIDERS_CONFIG:-config/providers.test.yaml}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+    depends_on:
+      mock_provider:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock_provider:
+    build: ./mock_provider
+    ports:
+      - "8001:8001"
+    environment:
+      MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-0}
+      MOCK_TTFT_MS: ${MOCK_TTFT_MS:-0}
+      MOCK_TOKENS_PER_SEC: ${MOCK_TOKENS_PER_SEC:-0}
+      MOCK_OUTPUT_TOKENS: ${MOCK_OUTPUT_TOKENS:-32}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Postgres and Redis are not used by the gateway until phases 1.4/1.5.
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: tollgate
+      POSTGRES_PASSWORD: tollgate
+      POSTGRES_DB: tollgate
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tollgate -d tollgate"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

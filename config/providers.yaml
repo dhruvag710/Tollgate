@@ -1,0 +1,25 @@
+# Real providers. Keys come only from env (api_key_env), never from this file.
+# Prices are USD per 1M tokens: verify against provider pricing pages before
+# reporting any cost numbers.
+providers:
+  - name: openai
+    type: openai_compat
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    timeout_s: 60
+    connect_timeout_s: 3
+  - name: openrouter
+    type: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+  - name: ollama
+    type: openai_compat
+    base_url: http://ollama:11434/v1
+
+models:
+  gpt-4o-mini:
+    routes: [openai, openrouter]   # priority order (failover in v2)
+    price_per_1m: {input: 0.15, output: 0.60}
+  llama3.1:8b:
+    routes: [ollama]
+    price_per_1m: {input: 0, output: 0}

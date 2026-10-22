@@ -1,0 +1,210 @@
+"""Phase 1.1: non-streaming passthrough, driven by the official openai SDK."""
+
+import uuid
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import httpx
+import openai
+import pytest
+from fastapi import FastAPI
+
+from mock_provider.app import create_app as create_mock_app
+from tests.helpers import TEST_PROVIDERS, run_server, write_providers
+from tollgate.config import Settings
+from tollgate.main import create_app
+
+MESSAGES = [{"role": "user", "content": "hello"}]
+
+
+def test_sync_sdk_with_only_base_url_changed(tmp_path: Path) -> None:
+    """Acceptance 1.1 over real sockets: stock OpenAI client, only base_url differs."""
+    with run_server(create_mock_app(env={})) as mock_url:
+        config = write_providers(tmp_path, f"{mock_url}/v1")
+        with run_server(create_app(Settings(providers_config=config))) as gw_url:
+            client = openai.OpenAI(base_url=f"{gw_url}/v1", api_key="anything")
+            resp = client.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES)
+            models = client.models.list()
+
+    assert resp.object == "chat.completion"
+    assert resp.choices[0].message.role == "assistant"
+    assert resp.choices[0].message.content
+    assert resp.usage is not None and resp.usage.completion_tokens > 0
+    assert {m.id for m in models} == {"gpt-4o-mini", "llama3.1:8b"}
+
+
+async def test_async_sdk_response_and_headers(sdk: openai.AsyncOpenAI) -> None:
+    raw = await sdk.chat.completions.with_raw_response.create(
+        model="gpt-4o-mini", messages=MESSAGES, seed=3
+    )
+    resp = raw.parse()
+    uuid.UUID(raw.headers["x-request-id"])
+    assert raw.headers["x-tollgate-provider"] == "mock"
+    assert resp.choices[0].finish_reason == "stop"
+    assert resp.usage is not None
+    assert resp.usage.total_tokens == resp.usage.prompt_tokens + resp.usage.completion_tokens
+
+
+async def test_passthrough_is_deterministic_with_seed(sdk: openai.AsyncOpenAI) -> None:
+    a = await sdk.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES, seed=9)
+    b = await sdk.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES, seed=9)
+    assert a.choices[0].message.content == b.choices[0].message.content
+
+
+async def test_unknown_model_is_404(sdk: openai.AsyncOpenAI) -> None:
+    with pytest.raises(openai.NotFoundError) as exc:
+        await sdk.chat.completions.create(model="gpt-9", messages=MESSAGES)
+    assert exc.value.code == "model_not_found"
+
+
+async def test_missing_messages_is_400(sdk: openai.AsyncOpenAI) -> None:
+    with pytest.raises(openai.BadRequestError) as exc:
+        await sdk.chat.completions.create(model="gpt-4o-mini", messages=[])
+    assert exc.value.code == "invalid_request"
+
+
+async def test_stream_rejected_until_phase_1_3(sdk: openai.AsyncOpenAI) -> None:
+    with pytest.raises(openai.BadRequestError) as exc:
+        await sdk.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES, stream=True)
+    assert exc.value.code == "stream_not_supported"
+
+
+async def test_upstream_500_passes_through(sdk: openai.AsyncOpenAI) -> None:
+    with pytest.raises(openai.InternalServerError) as exc:
+        await sdk.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=MESSAGES,
+            extra_headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "500"},
+        )
+    assert exc.value.response.headers["x-tollgate-provider"] == "mock"
+
+
+async def test_upstream_429_keeps_retry_after(client: httpx.AsyncClient) -> None:
+    r = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": MESSAGES},
+        headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "429"},
+    )
+    assert r.status_code == 429
+    assert r.headers["retry-after"] == "1"
+    assert r.json()["error"]["code"] == "rate_limit_exceeded"
+
+
+async def test_invalid_json_and_non_object(client: httpx.AsyncClient) -> None:
+    r1 = await client.post("/v1/chat/completions", content=b"{")
+    r2 = await client.post("/v1/chat/completions", json=["x"])
+    assert r1.status_code == r2.status_code == 400
+    assert r1.json()["error"]["code"] == "invalid_json"
+
+
+async def test_body_size_limit() -> None:
+    app = create_app(
+        Settings(providers_config=TEST_PROVIDERS, max_request_body_bytes=100),
+        upstream_transport=httpx.ASGITransport(app=create_mock_app(env={})),
+    )
+    big = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "x" * 200}]}
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        declared = await c.post("/v1/chat/completions", json=big)
+
+        async def chunks():  # type: ignore[no-untyped-def]
+            yield b'{"model": "gpt-4o-mini", "messages": ['
+            yield b" " * 200
+
+        streamed = await c.post("/v1/chat/completions", content=chunks())
+    assert declared.status_code == streamed.status_code == 413
+
+
+async def test_healthz_and_unknown_route(client: httpx.AsyncClient) -> None:
+    assert (await client.get("/healthz")).json() == {"status": "ok"}
+    r = await client.get("/nope")
+    assert r.status_code == 404
+    assert r.json()["error"]["type"] == "not_found_error"
+
+
+# --- upstream transport behaviour, with a scripted transport ------------------
+
+
+def _gateway_with(
+    tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response], **overrides: Any
+) -> FastAPI:
+    config = write_providers(tmp_path, "http://upstream/v1", **overrides)
+    return create_app(
+        Settings(providers_config=config), upstream_transport=httpx.MockTransport(handler)
+    )
+
+
+async def _post(app: FastAPI, headers: dict[str, str] | None = None) -> httpx.Response:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        return await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini", "messages": MESSAGES},
+            headers=headers,
+        )
+
+
+async def test_provider_key_sent_and_client_key_not_forwarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "x", "choices": []})
+
+    monkeypatch.setenv("TEST_PROVIDER_KEY", "sk-upstream")
+    app = _gateway_with(
+        tmp_path, handler, api_key_env="TEST_PROVIDER_KEY", forward_mock_headers=False
+    )
+    r = await _post(app, headers={"Authorization": "Bearer tg_client", "X-Mock-Seed": "1"})
+    assert r.status_code == 200
+    assert seen[0].headers["authorization"] == "Bearer sk-upstream"
+    assert "x-mock-seed" not in seen[0].headers
+    assert str(seen[0].url) == "http://upstream/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "code"),
+    [
+        (httpx.ConnectError("refused"), 502, "upstream_unreachable"),
+        (httpx.ReadTimeout("slow"), 504, "upstream_timeout"),
+    ],
+)
+async def test_transport_failures(tmp_path: Path, exc: Exception, status: int, code: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    r = await _post(_gateway_with(tmp_path, handler))
+    assert r.status_code == status
+    assert r.json()["error"]["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("upstream", "status", "code"),
+    [
+        (httpx.Response(200, text="not json"), 502, "upstream_bad_response"),
+        (httpx.Response(401, json={"error": {"message": "bad key"}}), 502, "upstream_auth_failed"),
+        (httpx.Response(503, json={"detail": "down"}), 503, "upstream_error"),
+    ],
+)
+async def test_bad_upstream_responses(
+    tmp_path: Path, upstream: httpx.Response, status: int, code: str
+) -> None:
+    r = await _post(_gateway_with(tmp_path, lambda _: upstream))
+    assert r.status_code == status
+    assert r.json()["error"]["code"] == code
+
+
+def test_missing_provider_key_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    from tollgate.config import load_providers_file
+    from tollgate.providers.registry import ProviderRegistry
+
+    config = load_providers_file(write_providers(tmp_path, "http://u/v1", api_key_env="NOPE_KEY"))
+    ProviderRegistry.from_config(config, httpx.AsyncClient(), env={})
+    assert "NOPE_KEY" in caplog.text

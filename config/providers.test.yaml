@@ -1,0 +1,21 @@
+# Everything points at mock_provider. Used by tests, benchmarks and the
+# default docker compose stack, so no real keys are ever needed.
+providers:
+  - name: mock
+    type: openai_compat
+    base_url: http://mock_provider:8001/v1
+    timeout_s: 60
+    connect_timeout_s: 3
+    forward_mock_headers: true
+  - name: mock-secondary
+    type: openai_compat
+    base_url: http://mock_provider:8001/v1
+    forward_mock_headers: true
+
+models:
+  gpt-4o-mini:
+    routes: [mock, mock-secondary]
+    price_per_1m: {input: 0.15, output: 0.60}
+  llama3.1:8b:
+    routes: [mock]
+    price_per_1m: {input: 0, output: 0}
