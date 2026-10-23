@@ -17,6 +17,8 @@ from fastapi import FastAPI
 
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
+    AUTH,
+    TEST_KEY,
     TEST_PROVIDERS,
     MemoryLedger,
     assert_internal_error_response,
@@ -38,7 +40,7 @@ def test_sync_sdk_with_only_base_url_changed(tmp_path: Path) -> None:
     with run_server(create_mock_app(env={})) as mock_url:
         config = write_providers(tmp_path, f"{mock_url}/v1")
         with run_server(create_app(Settings(providers_config=config))) as gw_url:
-            client = openai.OpenAI(base_url=f"{gw_url}/v1", api_key="anything")
+            client = openai.OpenAI(base_url=f"{gw_url}/v1", api_key=TEST_KEY)
             resp = client.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES)
             models = client.models.list()
 
@@ -136,7 +138,9 @@ async def test_body_size_limit() -> None:
     big = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "x" * 200}]}
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t", headers=AUTH
+        ) as c,
     ):
         declared = await c.post("/v1/chat/completions", json=big)
 
@@ -175,7 +179,9 @@ def _gateway_with(
 async def _post(app: FastAPI, headers: dict[str, str] | None = None) -> httpx.Response:
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t", headers=AUTH
+        ) as c,
     ):
         return await c.post(
             "/v1/chat/completions",
@@ -197,9 +203,10 @@ async def test_provider_key_sent_and_client_key_not_forwarded(
     app = _gateway_with(
         tmp_path, handler, api_key_env="TEST_PROVIDER_KEY", forward_mock_headers=False
     )
-    r = await _post(app, headers={"Authorization": "Bearer tg_client", "X-Mock-Seed": "1"})
+    r = await _post(app, headers={"X-Mock-Seed": "1"})  # with the suite's Tollgate key
     assert r.status_code == 200
     assert seen[0].headers["authorization"] == "Bearer sk-upstream"
+    assert TEST_KEY not in str(seen[0].headers)
     assert "x-mock-seed" not in seen[0].headers
     assert str(seen[0].url) == "http://upstream/v1/chat/completions"
 
@@ -321,7 +328,9 @@ async def test_shutdown_before_the_request_is_sent_records_zero(tmp_path: Path) 
     app = _gateway_with(tmp_path, handler, ledger)
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t", headers=AUTH
+        ) as c,
     ):
         task = asyncio.create_task(
             c.post("/v1/chat/completions", json={"model": "gpt-4o-mini", "messages": MESSAGES})
@@ -349,7 +358,7 @@ def test_shutdown_after_the_request_is_sent_estimates_the_prompt(tmp_path: Path)
                 httpx.post,
                 f"{url}/v1/chat/completions",
                 json={"model": "gpt-4o-mini", "messages": MESSAGES},
-                headers={"X-Mock-Latency-Ms": "30000"},
+                headers={**AUTH, "X-Mock-Latency-Ms": "30000"},
                 timeout=30,
             )
             # Wait until the request has reached the provider.

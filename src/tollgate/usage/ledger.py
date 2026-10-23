@@ -26,6 +26,8 @@ UsageStatus = Literal[
 @dataclass(frozen=True)
 class UsageEvent:
     request_id: str
+    tenant_id: str
+    api_key_id: str
     model: str
     provider: str
     status: UsageStatus
@@ -77,12 +79,16 @@ class Metering:
         self,
         *,
         request_id: str,
+        tenant_id: str,
+        api_key_id: str,
         started_at: float,
         model: str,
         provider: str,
         messages: list[dict[str, Any]],
     ) -> "UsageMeter":
-        return UsageMeter(self, request_id, started_at, model, provider, messages)
+        return UsageMeter(
+            self, request_id, tenant_id, api_key_id, started_at, model, provider, messages
+        )
 
     def _opened(self) -> None:
         self._open += 1
@@ -106,6 +112,8 @@ class UsageMeter:
         self,
         metering: Metering,
         request_id: str,
+        tenant_id: str,
+        api_key_id: str,
         started_at: float,  # time.perf_counter() when the request arrived
         model: str,
         provider: str,
@@ -113,6 +121,8 @@ class UsageMeter:
     ) -> None:
         self._metering = metering
         self.request_id = request_id
+        self.tenant_id = tenant_id
+        self.api_key_id = api_key_id
         self.started_at = started_at
         self.model = model
         self.provider = provider
@@ -171,6 +181,8 @@ class UsageMeter:
         await self._metering.ledger.record(
             UsageEvent(
                 request_id=self.request_id,
+                tenant_id=self.tenant_id,
+                api_key_id=self.api_key_id,
                 model=self.model,
                 provider=self.provider,
                 # Leaving measure() without settling anything is itself a bug.

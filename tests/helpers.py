@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,10 +18,38 @@ import pytest
 import uvicorn
 import yaml
 
+from tollgate.config import Settings
+from tollgate.db import tenants
+from tollgate.db.session import create_engine, create_sessionmaker
 from tollgate.usage.ledger import UsageEvent
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_PROVIDERS = ROOT / "config" / "providers.test.yaml"
+
+# Exported as KEY_PEPPER and ADMIN_TOKEN by tests/integration/conftest.py.
+TEST_PEPPER = "integration-suite-pepper-not-a-secret"
+TEST_ADMIN_TOKEN = "integration-suite-admin-token"
+ADMIN = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+# The key of the suite's shared tenant, seeded by tests/integration/conftest.py.
+TEST_KEY = "tg_live_" + "IntegrationSuiteKey0123456789abcdefghijklmno"[:43]
+AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
+
+
+async def issue_key(*, raw_key: str | None = None, **tenant_fields: Any) -> tenants.IssuedKey:
+    """A new tenant (uniquely named unless `name` is given) and a key for it, in
+    the test database."""
+    tenant_fields.setdefault("name", f"tenant-{uuid.uuid4().hex[:12]}")
+    engine = create_engine(Settings(providers_config=TEST_PROVIDERS))
+    try:
+        async with create_sessionmaker(engine)() as session, session.begin():
+            tenant = await tenants.create_tenant(session, **tenant_fields)
+            issued = await tenants.create_api_key(
+                session, tenant.id, pepper=TEST_PEPPER, raw_key=raw_key
+            )
+    finally:
+        await engine.dispose()
+    assert issued is not None
+    return issued
 
 
 def in_flight_bound(tokens_per_sec: float) -> int:

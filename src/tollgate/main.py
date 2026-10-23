@@ -9,11 +9,16 @@ from contextlib import asynccontextmanager
 import anyio
 import httpx
 from fastapi import FastAPI
+from redis.asyncio import Redis
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tollgate.api import health
+from tollgate.api.admin import keys as admin_keys
+from tollgate.api.admin import tenants as admin_tenants
 from tollgate.api.v1 import chat, models
+from tollgate.auth.cache import KeyCache
 from tollgate.config import Settings, load_providers_file
+from tollgate.db.session import create_engine, create_sessionmaker
 from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
@@ -69,11 +74,28 @@ def create_app(
             max_connections=settings.upstream_max_connections,
             max_keepalive_connections=settings.upstream_max_keepalive,
         )
-        async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
-            app.state.router = Router(ProviderRegistry.from_config(providers_file, client))
-            yield
-            with anyio.move_on_after(USAGE_RECORD_TIMEOUT_S):
-                await metering.wait_idle()
+        # Both connect lazily: the gateway starts while either is briefly down,
+        # and requests fail closed meanwhile (/readyz reports it).
+        engine = create_engine(settings)
+        redis = Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_timeout=settings.redis_timeout_s,
+            socket_connect_timeout=settings.redis_timeout_s,
+        )
+        app.state.engine = engine
+        app.state.sessions = create_sessionmaker(engine)
+        app.state.redis = redis
+        app.state.key_cache = KeyCache(redis)
+        try:
+            async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
+                app.state.router = Router(ProviderRegistry.from_config(providers_file, client))
+                yield
+                with anyio.move_on_after(USAGE_RECORD_TIMEOUT_S):
+                    await metering.wait_idle()
+        finally:
+            await redis.aclose()
+            await engine.dispose()
 
     app = FastAPI(title="Tollgate", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.settings = settings
@@ -85,4 +107,6 @@ def create_app(
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(chat.router)
+    app.include_router(admin_tenants.router)
+    app.include_router(admin_keys.router)
     return app

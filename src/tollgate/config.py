@@ -5,8 +5,12 @@ from pathlib import Path
 from typing import Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Matches the docker compose stack's published ports.
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://tollgate:tollgate@localhost:5432/tollgate"
+DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
 
 class Settings(BaseSettings):
@@ -17,6 +21,16 @@ class Settings(BaseSettings):
     upstream_max_connections: int = 1000
     upstream_max_keepalive: int = 200
     log_level: str = "INFO"
+
+    database_url: str = DEFAULT_DATABASE_URL
+    # Bounds every query, so an auth lookup can't outlive a cache invalidation.
+    db_command_timeout_s: float = 5.0
+    redis_url: str = DEFAULT_REDIS_URL
+    redis_timeout_s: float = 1.0
+    # HMAC key for stored API key hashes. Changing it invalidates every key.
+    key_pepper: SecretStr = Field(min_length=16)
+    # The admin API is disabled unless this is set.
+    admin_token: SecretStr | None = Field(default=None, min_length=16)
 
 
 class ProviderConfig(BaseModel):

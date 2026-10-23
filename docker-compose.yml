@@ -11,10 +11,15 @@ services:
       # Set PROVIDERS_CONFIG=config/providers.yaml in .env to use real providers.
       PROVIDERS_CONFIG: ${PROVIDERS_CONFIG:-config/providers.test.yaml}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      DATABASE_URL: postgresql+asyncpg://tollgate:tollgate@postgres:5432/tollgate
+      REDIS_URL: redis://redis:6379/0
+      # Local development defaults only: set real secrets in .env anywhere else.
+      KEY_PEPPER: ${KEY_PEPPER:-dev-only-pepper-change-me}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-only-admin-token}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       mock_provider:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -39,7 +44,16 @@ services:
       timeout: 3s
       retries: 10
 
-  # Postgres and Redis are not used by the gateway until phases 1.4/1.5.
+  # Runs the migrations once, before any gateway replica starts.
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://tollgate:tollgate@postgres:5432/tollgate
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:

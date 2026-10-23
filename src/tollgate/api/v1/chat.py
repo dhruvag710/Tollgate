@@ -7,12 +7,14 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from tollgate.auth.context import TenantContext
+from tollgate.auth.dependency import require_tenant
 from tollgate.config import Settings
 from tollgate.deps import get_metering, get_router, get_settings
 from tollgate.errors import TollgateError, upstream_error_response
 from tollgate.providers.base import Provider
 from tollgate.ratelimit.estimate import generated_text
-from tollgate.routing.router import Router
+from tollgate.routing.router import Router, model_not_found
 from tollgate.streaming.sse import SSEProxyResponse
 from tollgate.usage.ledger import Metering, UsageMeter, parse_usage
 
@@ -64,6 +66,8 @@ async def chat_completions(
     settings: Annotated[Settings, Depends(get_settings)],
     router_: Annotated[Router, Depends(get_router)],
     metering: Annotated[Metering, Depends(get_metering)],
+    # Resolved before the body is read: an unauthenticated request costs nothing.
+    tenant: Annotated[TenantContext, Depends(require_tenant)],
 ) -> Response:
     body = await read_json_body(request, settings.max_request_body_bytes)
     try:
@@ -75,9 +79,13 @@ async def chat_completions(
             400, f"Invalid request: {loc}: {err['msg']}", "invalid_request_error", "invalid_request"
         ) from exc
 
+    if not tenant.allows(req.model):
+        raise model_not_found(req.model)
     provider = router_.route(req.model)
     meter = metering.meter(
         request_id=request.state.request_id,
+        tenant_id=tenant.tenant_id,
+        api_key_id=tenant.api_key_id,
         started_at=request.state.started_at,
         model=req.model,
         provider=provider.name,

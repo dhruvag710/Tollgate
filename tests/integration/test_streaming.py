@@ -26,6 +26,8 @@ import pytest
 from mock_provider.app import count_prompt_tokens
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
+    AUTH,
+    TEST_KEY,
     MemoryLedger,
     assert_internal_error_response,
     in_flight_bound,
@@ -195,14 +197,16 @@ async def scripted_gateway(
     )
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t", headers=AUTH
+        ) as client,
     ):
         yield client, ledger
 
 
 def _sdk(client: httpx.AsyncClient) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(
-        base_url="http://t/v1", api_key="tg_test", http_client=client, max_retries=0
+        base_url="http://t/v1", api_key=TEST_KEY, http_client=client, max_retries=0
     )
 
 
@@ -439,7 +443,7 @@ def test_sync_sdk_streams_over_sockets(tmp_path: Path) -> None:
         run_server(create_mock_app(env={})) as mock_url,
         gateway_server(tmp_path, mock_url) as (url, ledger),
     ):
-        client = openai.OpenAI(base_url=f"{url}/v1", api_key="anything")
+        client = openai.OpenAI(base_url=f"{url}/v1", api_key=TEST_KEY)
         stream = client.chat.completions.create(
             model=MODEL, messages=MESSAGES, stream=True, extra_headers={"X-Mock-Output-Tokens": "6"}
         )
@@ -462,7 +466,7 @@ def test_chunks_are_forwarded_as_they_arrive(tmp_path: Path) -> None:
             "POST",
             f"{url}/v1/chat/completions",
             json=STREAM_BODY,
-            headers={"X-Mock-Tokens-Per-Sec": "10", "X-Mock-Output-Tokens": "5"},
+            headers={**AUTH, "X-Mock-Tokens-Per-Sec": "10", "X-Mock-Output-Tokens": "5"},
         ) as r:
             for line in r.iter_lines():
                 if _is_token_line(line):
@@ -504,7 +508,7 @@ def test_client_disconnect_cancels_upstream_request(tmp_path: Path) -> None:
             "POST",
             f"{url}/v1/chat/completions",
             json=body,
-            headers={**long_reply, "X-Mock-Tokens-Per-Sec": "20"},
+            headers={**AUTH, **long_reply, "X-Mock-Tokens-Per-Sec": "20"},
         ) as r:
             for line in r.iter_lines():
                 if _is_token_line(line):
@@ -543,7 +547,7 @@ def test_disconnect_before_first_token_cancels_upstream_request(tmp_path: Path) 
             httpx.post(
                 f"{url}/v1/chat/completions",
                 json=STREAM_BODY,
-                headers={"X-Mock-TTFT-Ms": "30000"},
+                headers={**AUTH, "X-Mock-TTFT-Ms": "30000"},
                 timeout=httpx.Timeout(10, read=0.5),
             )
         assert wait_until(
@@ -562,7 +566,7 @@ def test_upstream_drop_mid_stream_ends_with_error_event(tmp_path: Path) -> None:
         run_server(create_mock_app(env={})) as mock_url,
         gateway_server(tmp_path, mock_url) as (url, ledger),
     ):
-        client = openai.OpenAI(base_url=f"{url}/v1", api_key="anything", max_retries=0)
+        client = openai.OpenAI(base_url=f"{url}/v1", api_key=TEST_KEY, max_retries=0)
         stream = client.chat.completions.create(
             model=MODEL,
             messages=MESSAGES,
@@ -598,7 +602,7 @@ def test_gateway_shutdown_mid_stream_is_recorded(tmp_path: Path) -> None:
                 "POST",
                 f"{url}/v1/chat/completions",
                 json=STREAM_BODY,
-                headers={"X-Mock-Tokens-Per-Sec": "20", "X-Mock-Output-Tokens": "1000"},
+                headers={**AUTH, "X-Mock-Tokens-Per-Sec": "20", "X-Mock-Output-Tokens": "1000"},
             ) as r,
         ):
             lines = r.iter_lines()
@@ -641,7 +645,7 @@ def test_gateway_shutdown_before_first_event_is_a_503(tmp_path: Path) -> None:
                 httpx.post,
                 f"{url}/v1/chat/completions",
                 json=STREAM_BODY,
-                headers={"X-Mock-TTFT-Ms": "30000"},
+                headers={**AUTH, "X-Mock-TTFT-Ms": "30000"},
                 timeout=30,
             )
             assert wait_until(lambda: httpx.get(f"{mock_url}/mock/stats").json()["requests"] == 1)
@@ -684,7 +688,7 @@ def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
                     "POST",
                     f"{base_url}/v1/chat/completions",
                     json=STREAM_BODY,
-                    headers={"X-Mock-Output-Tokens": "8"},
+                    headers={**AUTH, "X-Mock-Output-Tokens": "8"},
                 ) as r:
                     for line in r.iter_lines():
                         if first is None and line.startswith("data: "):

@@ -12,6 +12,9 @@ RUN pip install .
 # Bake tokenizer files into the image so startup never needs the network.
 RUN python -c "import tiktoken; [tiktoken.get_encoding(e) for e in ('o200k_base', 'cl100k_base')]"
 COPY config ./config
+COPY alembic.ini ./
+COPY migrations ./migrations
+COPY scripts ./scripts
 
 EXPOSE 8000
 # On stop, streams still running after 5 s are cut off and recorded as

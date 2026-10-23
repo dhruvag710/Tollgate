@@ -3,9 +3,10 @@
 A self-hosted, OpenAI-compatible LLM gateway. Point your OpenAI SDK at Tollgate by
 changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** phases 1.1–1.3: passthrough for streaming and non-streaming chat
-completions, and the mock provider. Auth, rate limiting and the persistent usage ledger
-come in later phases; until then each request's usage event is written to the log.
+**Status:** phases 1.1–1.4: passthrough for streaming and non-streaming chat
+completions, the mock provider, and tenants with API keys. Rate limiting and the
+persistent usage ledger come in later phases; until then each request's usage event is
+written to the log.
 
 Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
 always asks the provider for the final usage chunk, but only forwards it if the client
@@ -23,20 +24,29 @@ cut off by a shutdown gets a 503 with `Retry-After`, which OpenAI SDKs retry.
 ## Quickstart
 
 ```sh
-docker compose up --build
+docker compose up --build -d
+# Create a tenant and its first API key. The key is printed once; only its hash is stored.
+docker compose exec gateway python scripts/create_tenant.py --name demo
+export TOLLGATE_KEY=tg_live_...   # the api_key printed above
 curl -s localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $TOLLGATE_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
-The default stack routes every model to `mock_provider`, so no real keys are needed.
-To use real providers, copy `.env.example` to `.env`, set
-`PROVIDERS_CONFIG=config/providers.yaml` and fill in the keys.
+The default stack routes every model to `mock_provider`, so no provider keys are needed,
+and uses development-only defaults for `KEY_PEPPER` and `ADMIN_TOKEN`. To use real
+providers or real secrets, copy `.env.example` to `.env` and fill it in.
+
+Tenants and keys can also be managed over the admin API (`Authorization: Bearer
+$ADMIN_TOKEN`): `POST /admin/tenants`, `PATCH /admin/tenants/{id}`,
+`POST /admin/tenants/{id}/keys` and `DELETE /admin/keys/{id}`. A revoked key stops
+working on every replica at once.
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="anything")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="tg_live_...")
 client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
 
 for chunk in client.chat.completions.create(

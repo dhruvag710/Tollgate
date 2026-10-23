@@ -18,6 +18,8 @@ def _meter(
     metering = Metering(ledger)
     meter = metering.meter(
         request_id="r1",
+        tenant_id="t1",
+        api_key_id="k1",
         started_at=time.perf_counter() if started_at is None else started_at,
         model="gpt-4o-mini",
         provider="mock",
@@ -184,7 +186,13 @@ async def test_cancellation_mid_write_still_records_the_event() -> None:
 async def test_wait_idle_waits_for_every_open_meter() -> None:
     first, ledger, metering = _meter()
     second = metering.meter(
-        request_id="r2", started_at=time.perf_counter(), model="m", provider="p", messages=[]
+        request_id="r2",
+        tenant_id="t1",
+        api_key_id="k2",
+        started_at=time.perf_counter(),
+        model="m",
+        provider="p",
+        messages=[],
     )
     async with asyncio.timeout(1):
         await metering.wait_idle()  # nothing open
@@ -215,9 +223,9 @@ async def test_wait_idle_waits_for_every_open_meter() -> None:
 
 async def test_log_ledger_logs_event_without_prompt(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO")
-    event = UsageEvent("r1", "gpt-4o-mini", "mock", "success", 1, 2, False, 30, 10)
+    event = UsageEvent("r1", "t1", "k1", "gpt-4o-mini", "mock", "success", 1, 2, False, 30, 10)
     await LogLedger().record(event)
     logged = json.loads(caplog.records[0].getMessage().removeprefix("usage_event "))
-    assert logged["request_id"] == "r1"
+    assert (logged["request_id"], logged["tenant_id"], logged["api_key_id"]) == ("r1", "t1", "k1")
     assert logged["completion_tokens"] == 2
     assert "secret" not in caplog.text

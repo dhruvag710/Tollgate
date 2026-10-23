@@ -185,6 +185,8 @@ async def _run(
     metering = Metering(ledger)
     meter = metering.meter(
         request_id="r1",
+        tenant_id="t1",
+        api_key_id="k1",
         started_at=time.perf_counter(),
         model="gpt-4o-mini",
         provider="fake",

@@ -252,7 +252,9 @@ CREATE INDEX ON cache_entries (tenant_id, scope_hash);
 
 | Key | Type | Purpose | TTL |
 |---|---|---|---|
-| `tg:key:{key_hash}` | hash | cached TenantContext | 60s, deleted on revoke |
+| `tg:key:{key_hash}` | hash | cached TenantContext, plus the tenant generation it was built under | 60s; counts only while that generation is current; deleted on revoke |
+| `tg:key_tenant:{key_hash}` | string | the key's tenant id, which never changes, so a lookup knows which generation to read | 24h |
+| `tg:tenant_gen:{tenant_id}` | string (int) | bumped after every committed revoke or limit change | none |
 | `tg:rl:rpm:{tenant_id}` | hash `{tokens, ts}` | token bucket | 2× refill window |
 | `tg:rl:tpm:{tenant_id}` | hash `{tokens, ts}` | token budget bucket | 2× window |
 | `tg:rl:sw:{tenant_id}` | zset | sliding window log (v2 comparison) | window |
@@ -260,6 +262,8 @@ CREATE INDEX ON cache_entries (tenant_id, scope_hash);
 | `tg:cb:{provider}` | hash `{state, failures, opened_at}` | circuit breaker (v2) | none |
 | `tg:exact:{tenant_id}:{hash}` | string | exact-match cache (v2) | entry TTL |
 | `tg:usage` | stream | usage events (v2) | trimmed by MAXLEN |
+
+**Key cache invalidation uses generations, not deletes.** Deleting a tenant's entries on a change would race: a lookup that read Postgres just before a revoke could write its stale entry back just after the delete, and the revoked key would keep working until the entry expired. Instead, a change bumps `tg:tenant_gen`, which makes every entry built before it stop counting at once, on every replica. A lookup reads the generation before it queries Postgres and refills the cache only if the generation hasn't moved since. A key's first two requests read Postgres: the first only learns its tenant.
 
 **Use server time inside Lua (`redis.call('TIME')`),** never the app's clock. Clock skew between replicas will otherwise break the limiter.
 
@@ -344,7 +348,7 @@ Prices are config values. Verify them against provider pricing pages before repo
 
 **Phase 1.4: Tenants and keys**
 - Key format `tg_live_` + 32 bytes base62; store `HMAC-SHA256(pepper, key)`; compare in constant time
-- Redis key cache with 60s TTL, explicitly deleted on revoke or limit change
+- Redis key cache with 60s TTL, explicitly invalidated on revoke or limit change (tenant generations, §5.2)
 - Admin endpoints and `scripts/create_tenant.py`
 - ✅ Accept: revoked key is rejected within 1s; Postgres is not queried on cache-hit auth (assert via query counter)
 

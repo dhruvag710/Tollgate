@@ -13,6 +13,7 @@ import httpx
 
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
+    AUTH,
     MemoryLedger,
     in_flight_bound,
     run_server,
@@ -53,7 +54,7 @@ def test_ledger_totals_match_mock_counters_exactly(tmp_path: Path) -> None:
                 r = httpx.post(
                     f"{url}/v1/chat/completions",
                     json={"model": "gpt-4o-mini", "messages": messages, "stream": stream},
-                    headers={"X-Mock-Output-Tokens": "10", **headers},
+                    headers={**AUTH, "X-Mock-Output-Tokens": "10", **headers},
                     timeout=10,
                 )
                 assert r.status_code == status, (i, r.text)
@@ -93,7 +94,11 @@ def test_disconnects_fall_short_by_at_most_the_tokens_in_flight(tmp_path: Path) 
                     "POST",
                     f"{url}/v1/chat/completions",
                     json={"model": "gpt-4o-mini", "messages": messages, "stream": True},
-                    headers={"X-Mock-Tokens-Per-Sec": str(rate), "X-Mock-Output-Tokens": "1000"},
+                    headers={
+                        **AUTH,
+                        "X-Mock-Tokens-Per-Sec": str(rate),
+                        "X-Mock-Output-Tokens": "1000",
+                    },
                 ) as r:
                     seen = 0
                     for line in r.iter_lines():
