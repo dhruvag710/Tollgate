@@ -257,6 +257,11 @@ async def test_shutdown_mid_stream_records_gateway_shutdown() -> None:
     assert stream.closed
     with pytest.raises(asyncio.CancelledError):
         await task
+    # The client's stream ends with an event saying why, rather than just stopping.
+    last = sent.messages[-1]
+    assert last["more_body"] is False
+    body = json.loads(event_data(last["body"].strip()) or "")
+    assert body["error"]["code"] == "gateway_shutdown"
 
 
 async def test_internal_error_mid_stream_records_gateway_error() -> None:

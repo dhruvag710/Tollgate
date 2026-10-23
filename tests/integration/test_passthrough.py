@@ -355,8 +355,20 @@ def test_shutdown_after_the_request_is_sent_estimates_the_prompt(tmp_path: Path)
             # Wait until the request has reached the provider.
             assert wait_until(lambda: _mock_stats(mock_url)["requests"] == 1)
             server.should_exit = True  # as on SIGTERM
-            assert reply.result(timeout=10).status_code == 500
+            r = reply.result(timeout=10)
             assert wait_until(lambda: len(ledger.events) == 1)
+        # An OpenAI-shaped 503 that SDKs retry, not uvicorn's plain-text 500.
+        assert r.status_code == 503
+        assert r.headers["retry-after"] == "1"
+        assert r.headers["x-request-id"] == ledger.events[0].request_id
+        assert r.json() == {
+            "error": {
+                "message": "Tollgate is shutting down. Retry the request.",
+                "type": "api_error",
+                "param": None,
+                "code": "gateway_shutdown",
+            }
+        }
         # The mock saw the gateway leave and counts the prompt as received, unfinished.
         assert wait_until(lambda: _mock_stats(mock_url)["partial_prompt_tokens"] > 0)
         stats = _mock_stats(mock_url)

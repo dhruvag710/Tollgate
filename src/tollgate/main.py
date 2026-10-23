@@ -14,7 +14,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from tollgate.api import health
 from tollgate.api.v1 import chat, models
 from tollgate.config import Settings, load_providers_file
-from tollgate.errors import InternalErrorMiddleware, install_error_handlers
+from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
 from tollgate.routing.router import Router
@@ -79,8 +79,8 @@ def create_app(
     app.state.settings = settings
     app.state.metering = metering
     install_error_handlers(app)
-    # The last added runs outermost: InternalErrorMiddleware needs the request id.
-    app.add_middleware(InternalErrorMiddleware)
+    # The last added runs outermost: UnhandledErrorMiddleware needs the request id.
+    app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.include_router(health.router)
     app.include_router(models.router)

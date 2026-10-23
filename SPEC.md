@@ -172,6 +172,8 @@ client
 
 **Usage invariant:** every request that reaches a provider (step [7]) produces exactly one usage event, whatever happens: `success`, `provider_error`, `client_disconnect`, `gateway_shutdown` (cut off by a gateway shutdown) or `gateway_error` (an internal error in the gateway). Streaming and non-streaming alike. The event records whatever usage is known: what the provider reported, otherwise, once the request has been sent, a tiktoken estimate (`usage_estimated = TRUE`) of the prompt plus any completion text received, since the provider may bill a request it received even if no response comes back. It records zero tokens only if the request was never sent, or if the provider answered with an error status (nothing is billed for those). Shutdown waits for cut-off requests to record their events before closing anything.
 
+**Reconciliation limit:** a stream the gateway abandons while the provider is still sending can't reconcile exactly with the provider's count. Tokens the provider has already sent are still in flight when the gateway hangs up, so the provider counts them and the gateway never sees them. This always applies to `client_disconnect`, and to `gateway_shutdown` or `gateway_error` when they strike mid-stream. Prompt tokens still match exactly; only completion tokens can fall short, by a bounded amount (see C4). Every other event reconciles exactly.
+
 **Response headers added:** `X-Request-ID`, `X-Tollgate-Provider`, `X-Tollgate-Cache: HIT|MISS|BYPASS`, `X-RateLimit-Limit-Requests`, `X-RateLimit-Remaining-Requests`, `X-RateLimit-Remaining-Tokens`, `Retry-After` (on 429).
 
 **Error format:** always the OpenAI shape, so SDKs parse it:
@@ -357,7 +359,7 @@ Prices are config values. Verify them against provider pricing pages before repo
 - `INSERT ... ON CONFLICT (request_id) DO NOTHING`
 - Month-to-date spend kept in Redis and checked before the call; requests are rejected with 402-style error once over budget
 - Graceful shutdown flushes the queue
-- ✅ Accept: after a load test, `SUM(usage_events)` matches the mock provider's own served-token counter exactly
+- ✅ Accept: after a load test, `SUM(usage_events)` matches the mock provider's own served-token counter exactly, except for disconnected streams, which stay within C4's bound
 
 **Phase 1.7: Observability and multi-replica**
 - Prometheus metrics: `tollgate_requests_total{status,model,provider,cache}`, `tollgate_request_duration_seconds` histogram, `tollgate_gateway_overhead_seconds` histogram, `tollgate_ttft_seconds`, `tollgate_ratelimit_rejections_total`, `tollgate_ledger_queue_depth`
@@ -440,7 +442,7 @@ Prices are config values. Verify them against provider pricing pages before repo
 - **C1** Single-instance exactness: tenant `rpm_limit=100`, fire 500 concurrent requests → exactly 100 succeed, 400 get 429
 - **C2** Multi-replica exactness: same as C1, spread across 3 replicas → exactly 100 succeed
 - **C3** TPM reservation: concurrent requests whose reserved tokens sum past the TPM limit → over-limit requests rejected; after reconciliation, bucket balance equals `limit - actual_used`
-- **C4** Ledger accuracy: 10,000 requests → ledger totals equal mock provider counters exactly
+- **C4** Ledger accuracy: 10,000 requests → ledger totals equal mock provider counters exactly, for every status but `client_disconnect`. For disconnected streams (and any stream abandoned mid-stream, see §4), prompt tokens match exactly. Their completion tokens never exceed the mock's, and fall short by at most the tokens in flight: 1 + the stream's tokens/s × 200 ms per abandoned stream.
 
 ### Chaos (`tests/chaos/`)
 - **X1** Primary returns 500 for every request → all requests succeed via secondary; breaker opens after N failures

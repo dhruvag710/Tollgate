@@ -14,6 +14,7 @@ import math
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
     MemoryLedger,
     assert_internal_error_response,
+    in_flight_bound,
     run_server,
     run_uvicorn_process,
     serve,
@@ -41,6 +43,14 @@ from tollgate.streaming import sse
 MODEL = "gpt-4o-mini"
 MESSAGES = [{"role": "user", "content": "hello"}]
 STREAM_BODY = {"model": MODEL, "messages": MESSAGES, "stream": True}
+SHUTDOWN_ERROR = {
+    "error": {
+        "message": "Tollgate is shutting down. Retry the request.",
+        "type": "api_error",
+        "param": None,
+        "code": "gateway_shutdown",
+    }
+}
 
 
 def _is_token_line(line: str) -> bool:
@@ -599,17 +609,51 @@ def test_gateway_shutdown_mid_stream_is_recorded(tmp_path: Path) -> None:
                     break
             server.should_exit = True  # as on SIGTERM; the client stays connected
             assert wait_until(lambda: len(ledger.events) == 1, timeout=10)
-            # The client's stream is cut off rather than completed.
-            with pytest.raises(httpx.RemoteProtocolError):
-                for line in lines:
-                    assert "[DONE]" not in line
+            # The stream ends cleanly, with an error event telling the client why.
+            rest = [line for line in lines if line.startswith("data: ")]
+        assert "data: [DONE]" not in rest
+        assert json.loads(rest[-1].removeprefix("data: ")) == SHUTDOWN_ERROR
         assert wait_until(
             lambda: httpx.get(f"{mock_url}/mock/stats").json()["streams_cancelled"] == 1
         )
+        stats = httpx.get(f"{mock_url}/mock/stats").json()
     (event,) = ledger.events
     assert event.status == "gateway_shutdown"
     assert event.usage_estimated
     assert event.completion_tokens >= 5
+    # An abandoned stream (SPEC §4): the prompt reconciles exactly, the
+    # completion within the tokens in flight.
+    assert event.prompt_tokens == stats["partial_prompt_tokens"]
+    assert 0 <= stats["partial_completion_tokens"] - event.completion_tokens <= in_flight_bound(20)
+
+
+def test_gateway_shutdown_before_first_event_is_a_503(tmp_path: Path) -> None:
+    ledger = MemoryLedger()
+    with run_server(create_mock_app(env={})) as mock_url:
+        config = write_providers(tmp_path, f"{mock_url}/v1")
+        app = create_app(Settings(providers_config=config), ledger=ledger)
+        with (
+            serve(app, timeout_graceful_shutdown=0.5) as (url, server),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            # The upstream is still "thinking" when the shutdown cuts the stream off.
+            reply = pool.submit(
+                httpx.post,
+                f"{url}/v1/chat/completions",
+                json=STREAM_BODY,
+                headers={"X-Mock-TTFT-Ms": "30000"},
+                timeout=30,
+            )
+            assert wait_until(lambda: httpx.get(f"{mock_url}/mock/stats").json()["requests"] == 1)
+            server.should_exit = True
+            r = reply.result(timeout=10)
+    assert r.status_code == 503
+    assert r.headers["retry-after"] == "1"
+    assert r.json() == SHUTDOWN_ERROR
+    (event,) = ledger.events
+    assert event.status == "gateway_shutdown"
+    assert event.usage_estimated  # sent: the prompt may be billed
+    assert event.completion_tokens == 0
 
 
 def _percentile(samples: list[float], p: float) -> float:

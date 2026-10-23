@@ -1,5 +1,6 @@
 """Test helpers shared across suites."""
 
+import math
 import os
 import socket
 import subprocess
@@ -20,6 +21,13 @@ from tollgate.usage.ledger import UsageEvent
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_PROVIDERS = ROOT / "config" / "providers.test.yaml"
+
+
+def in_flight_bound(tokens_per_sec: float) -> int:
+    """Most completion tokens a stream at `tokens_per_sec` can have in flight when
+    the gateway abandons it (SPEC C4): the one being sent, plus what the provider
+    emits while the hang-up propagates, budgeted at 200 ms."""
+    return 1 + math.ceil(tokens_per_sec * 0.2)
 
 
 class MemoryLedger:

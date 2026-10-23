@@ -13,6 +13,7 @@ from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
 from tollgate.errors import (
+    SHUTDOWN_MESSAGE,
     TollgateError,
     error_body,
     error_response,
@@ -150,8 +151,13 @@ class SSEProxyResponse(Response):
             try:
                 with relay_scope:
                     await self._relay(scope, receive, send)
+            except asyncio.CancelledError:
+                # relay_scope absorbs the watcher's cancellation: this is a shutdown.
+                await self._end_started_stream(send, SHUTDOWN_MESSAGE, "gateway_shutdown")
+                raise
             except Exception:
-                await self._end_with_internal_error(send)
+                message = internal_error_message(self._meter.request_id)
+                await self._end_started_stream(send, message, "internal_error")
                 raise
             finally:
                 watcher.cancel()
@@ -176,15 +182,14 @@ class SSEProxyResponse(Response):
         meter.generated = tally.generated
         meter.first_token_at = tally.first_token_at
 
-    async def _end_with_internal_error(self, send: Send) -> None:
-        """End a stream the client is already reading with the same kind of error
-        event an upstream failure gets. The details go only to the server log
-        (InternalErrorMiddleware); a stream not yet started gets its JSON 500."""
+    async def _end_started_stream(self, send: Send, message: str, code: str) -> None:
+        """End a stream the client is already reading with an error event, as an
+        upstream failure would. A stream not yet started is answered instead by
+        UnhandledErrorMiddleware, with a 500 or a 503."""
         if not self._started or self._responded:
             return
-        event = error_event(internal_error_message(self._meter.request_id), "internal_error")
         with contextlib.suppress(Exception):  # sending may be what failed
-            await self._send(send, event, more_body=False)
+            await self._send(send, error_event(message, code), more_body=False)
 
     async def _relay(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:

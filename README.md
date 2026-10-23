@@ -17,6 +17,8 @@ HTTP error.
 Every request that reaches a provider produces exactly one usage event, whatever happens:
 `success`, `provider_error`, `client_disconnect`, `gateway_shutdown` (cut off by a shutdown)
 or `gateway_error` (an internal error), with whatever usage is known. See SPEC.md §4.
+Internal errors return an OpenAI-shaped 500 that carries only the request ID; a request
+cut off by a shutdown gets a 503 with `Retry-After`, which OpenAI SDKs retry.
 
 ## Quickstart
 

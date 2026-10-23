@@ -1,5 +1,7 @@
 """OpenAI-shaped error responses, so client SDKs parse them natively."""
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -13,6 +15,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from tollgate.providers.base import UpstreamResponse
 
 log = logging.getLogger(__name__)
+
+# A request cut off by a shutdown is answered with a 503 and this Retry-After
+# (seconds): long enough for a load balancer to route the retry elsewhere.
+SHUTDOWN_RETRY_AFTER_S = 1
+SHUTDOWN_MESSAGE = "Tollgate is shutting down. Retry the request."
 
 
 class TollgateError(Exception):
@@ -110,10 +117,14 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_error_handler)
 
 
-class InternalErrorMiddleware:
-    """Turns an unhandled exception into an OpenAI-shaped 500, and logs it with
-    its traceback under the request id. The response body carries neither the
-    traceback nor the exception's message. Must run inside RequestIDMiddleware.
+class UnhandledErrorMiddleware:
+    """Answers, in OpenAI shape, for whatever the app didn't handle.
+
+    An exception becomes a 500 and is logged with its traceback under the
+    request id; the body carries neither. A request cut off by a server
+    shutdown (its task cancelled) becomes a 503 with Retry-After, which SDKs
+    retry. Once a response has started it is too late for a status: a stream
+    ends itself with an error event. Must run inside RequestIDMiddleware.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -133,6 +144,19 @@ class InternalErrorMiddleware:
 
         try:
             await self.app(scope, receive, tracked_send)
+        except asyncio.CancelledError:
+            request_id = scope.get("state", {}).get("request_id")
+            log.warning(
+                "request cut off by shutdown, request_id=%s",
+                request_id,
+                extra={"request_id": request_id},
+            )
+            if not started:
+                body = error_body(SHUTDOWN_MESSAGE, "api_error", "gateway_shutdown")
+                headers = {"Retry-After": str(SHUTDOWN_RETRY_AFTER_S)}
+                with contextlib.suppress(Exception):  # the cancellation still goes on
+                    await JSONResponse(body, status_code=503, headers=headers)(scope, receive, send)
+            raise
         except Exception:
             request_id = scope.get("state", {}).get("request_id")
             log.exception(
