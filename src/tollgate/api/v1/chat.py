@@ -12,6 +12,7 @@ from tollgate.auth.dependency import require_tenant
 from tollgate.config import Settings
 from tollgate.deps import get_metering, get_router, get_settings
 from tollgate.errors import TollgateError, upstream_error_response
+from tollgate.observability.timing import Timings
 from tollgate.providers.base import Provider
 from tollgate.ratelimit.estimate import generated_text
 from tollgate.routing.router import Router, model_not_found
@@ -69,15 +70,20 @@ async def chat_completions(
     # Resolved before the body is read: an unauthenticated request costs nothing.
     tenant: Annotated[TenantContext, Depends(require_tenant)],
 ) -> Response:
-    body = await read_json_body(request, settings.max_request_body_bytes)
-    try:
-        req = ChatCompletionRequest.model_validate(body)
-    except ValidationError as exc:
-        err = exc.errors()[0]
-        loc = ".".join(str(p) for p in err["loc"])
-        raise TollgateError(
-            400, f"Invalid request: {loc}: {err['msg']}", "invalid_request_error", "invalid_request"
-        ) from exc
+    timings: Timings = request.state.timings
+    with timings.stage("body"):
+        body = await read_json_body(request, settings.max_request_body_bytes)
+        try:
+            req = ChatCompletionRequest.model_validate(body)
+        except ValidationError as exc:
+            err = exc.errors()[0]
+            loc = ".".join(str(p) for p in err["loc"])
+            raise TollgateError(
+                400,
+                f"Invalid request: {loc}: {err['msg']}",
+                "invalid_request_error",
+                "invalid_request",
+            ) from exc
 
     if not tenant.allows(req.model):
         raise model_not_found(req.model)
@@ -93,7 +99,7 @@ async def chat_completions(
     )
     if not req.stream:
         async with meter.measure():
-            return await _complete(request, body, provider, meter)
+            return await _complete(request, body, provider, meter, timings, settings.server_timing)
 
     client_options = req.stream_options or {}
     return SSEProxyResponse(
@@ -103,16 +109,24 @@ async def chat_completions(
         client_headers=request.headers,
         forward_usage_chunk=bool(client_options.get("include_usage")),
         meter=meter,
+        timings=timings,
+        server_timing=settings.server_timing,
     )
 
 
 async def _complete(
-    request: Request, body: dict[str, Any], provider: Provider, meter: UsageMeter
+    request: Request,
+    body: dict[str, Any],
+    provider: Provider,
+    meter: UsageMeter,
+    timings: Timings,
+    server_timing: bool,
 ) -> Response:
     try:
-        upstream = await provider.chat_completion(
-            body, client_headers=request.headers, on_sent=meter.mark_sent
-        )
+        with timings.stage("upstream-response"):
+            upstream = await provider.chat_completion(
+                body, client_headers=request.headers, on_sent=meter.mark_sent
+            )
     except TollgateError:
         meter.settle("provider_error")
         raise
@@ -128,10 +142,9 @@ async def _complete(
         for c in (choices if isinstance(choices, list) else [])
         if isinstance(c, dict)
     )
-    response = JSONResponse(
-        upstream.body,
-        status_code=upstream.status_code,
-        headers={"X-Tollgate-Provider": provider.name},
-    )
+    headers = {"X-Tollgate-Provider": provider.name}
+    if server_timing:
+        headers["Server-Timing"] = timings.server_timing()
+    response = JSONResponse(upstream.body, status_code=upstream.status_code, headers=headers)
     meter.settle("success")
     return response

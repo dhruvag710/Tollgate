@@ -35,8 +35,13 @@ curl -s localhost:8000/v1/chat/completions \
 ```
 
 The default stack routes every model to `mock_provider`, so no provider keys are needed,
-and uses development-only defaults for `KEY_PEPPER` and `ADMIN_TOKEN`. To use real
-providers or real secrets, copy `.env.example` to `.env` and fill it in.
+and runs with `DEV_MODE=true` and development-only `KEY_PEPPER` and `ADMIN_TOKEN`
+values (the gateway warns about this at startup). Without `DEV_MODE` it refuses to start
+with those values. Anywhere but your own machine, copy `.env.example` to `.env`, set real
+secrets there and `DEV_MODE=false`.
+
+**`KEY_PEPPER` is part of every stored key hash: changing it invalidates every API key
+ever issued.** Choose it once and keep it secret; rotating it means reissuing all keys.
 
 Tenants and keys can also be managed over the admin API (`Authorization: Bearer
 $ADMIN_TOKEN`): `POST /admin/tenants`, `PATCH /admin/tenants/{id}`,
@@ -72,3 +77,9 @@ pytest --cov                  # everything, including perf checks
 pytest -m "not perf" --cov    # what CI runs: perf checks depend on the machine
 ruff check . && ruff format --check . && mypy
 ```
+
+Integration tests start throwaway Postgres and Redis containers, so they need Docker.
+
+With `SERVER_TIMING=true`, responses carry a `Server-Timing` header breaking down the
+gateway's time per stage (`auth`, `body`, `upstream-*`, plus `other`, `gateway` and
+`total`); the perf test prints it.

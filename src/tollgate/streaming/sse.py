@@ -20,6 +20,7 @@ from tollgate.errors import (
     internal_error_message,
     upstream_error_response,
 )
+from tollgate.observability.timing import Timings
 from tollgate.providers.base import Provider, UpstreamResponse, UpstreamStream, UpstreamStreamError
 from tollgate.ratelimit.estimate import generated_text
 from tollgate.usage.ledger import UsageMeter, parse_usage
@@ -130,12 +131,16 @@ class SSEProxyResponse(Response):
         client_headers: Mapping[str, str],
         forward_usage_chunk: bool,
         meter: UsageMeter,
+        timings: Timings,
+        server_timing: bool,
     ) -> None:
         super().__init__()
         self._provider = provider
         self._body = body
         self._client_headers = client_headers
         self._meter = meter
+        self._timings = timings
+        self._server_timing = server_timing
         self._tally = StreamTally(forward_usage_chunk=forward_usage_chunk)
         self._upstream: UpstreamStream | None = None
         self._started = False  # http.response.start sent
@@ -193,9 +198,10 @@ class SSEProxyResponse(Response):
 
     async def _relay(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            opened = await self._provider.open_stream(
-                self._body, client_headers=self._client_headers, on_sent=self._meter.mark_sent
-            )
+            with self._timings.stage("upstream-open"):
+                opened = await self._provider.open_stream(
+                    self._body, client_headers=self._client_headers, on_sent=self._meter.mark_sent
+                )
         except TollgateError as exc:
             self._meter.settle("provider_error")
             await self._respond(error_response(exc), scope, receive, send)
@@ -208,12 +214,16 @@ class SSEProxyResponse(Response):
             )
             return
         self._upstream = opened
+        opened_at: float | None = time.perf_counter()
 
         decoder = SSEDecoder()
         tally = self._tally
         failure: UpstreamStreamError | None = None
         try:
             async for chunk in opened.aiter_bytes():
+                if opened_at is not None:
+                    self._timings.add("upstream-first-chunk", time.perf_counter() - opened_at)
+                    opened_at = None
                 if tally.done:
                     # The client already has [DONE]. Read on to the end of the
                     # body so the upstream connection can be reused.
@@ -263,6 +273,8 @@ class SSEProxyResponse(Response):
         if not self._started:
             self._started = True
             headers = [*SSE_HEADERS, (b"x-tollgate-provider", self._provider.name.encode())]
+            if self._server_timing:
+                headers.append((b"server-timing", self._timings.server_timing().encode()))
             await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": body, "more_body": more_body})
 

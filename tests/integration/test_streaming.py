@@ -665,6 +665,14 @@ def _percentile(samples: list[float], p: float) -> float:
     return ordered[math.ceil(p / 100 * len(ordered)) - 1]
 
 
+def parse_server_timing(header: str) -> list[tuple[str, float]]:
+    metrics = []
+    for item in filter(None, (part.strip() for part in header.split(","))):
+        name, _, duration = item.partition(";dur=")
+        metrics.append((name, float(duration)))
+    return metrics
+
+
 @pytest.mark.perf
 def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
     """Acceptance 1.3: time to first chunk via the gateway vs direct to the mock.
@@ -675,11 +683,12 @@ def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
     """
     with run_uvicorn_process("mock_provider.app:app") as mock_url:
         config = write_providers(tmp_path, f"{mock_url}/v1")
-        env = {"PROVIDERS_CONFIG": str(config), "LOG_LEVEL": "WARNING"}
+        env = {"PROVIDERS_CONFIG": str(config), "LOG_LEVEL": "WARNING", "SERVER_TIMING": "true"}
         with (
             run_uvicorn_process("--factory", "tollgate.main:create_app", env=env) as gw_url,
             httpx.Client(timeout=10) as client,
         ):
+            stages: dict[str, list[float]] = {}
 
             def ttft(base_url: str) -> float:
                 start = time.perf_counter()
@@ -690,6 +699,8 @@ def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
                     json=STREAM_BODY,
                     headers={**AUTH, "X-Mock-Output-Tokens": "8"},
                 ) as r:
+                    for name, ms in parse_server_timing(r.headers.get("server-timing", "")):
+                        stages.setdefault(name, []).append(ms)
                     for line in r.iter_lines():
                         if first is None and line.startswith("data: "):
                             first = time.perf_counter() - start
@@ -698,6 +709,7 @@ def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
 
             for _ in range(20):  # warm up connections on both paths
                 ttft(mock_url), ttft(gw_url)
+            stages.clear()
             direct, via_gateway = [], []
             for _ in range(200):  # interleaved, so drift hits both paths alike
                 direct.append(ttft(mock_url))
@@ -705,5 +717,14 @@ def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
 
     added_p50 = _percentile(via_gateway, 50) - _percentile(direct, 50)
     added_p99 = _percentile(via_gateway, 99) - _percentile(direct, 99)
-    print(f"\nTTFT added by gateway: p50 {added_p50 * 1000:.2f} ms, p99 {added_p99 * 1000:.2f} ms")
+    print(
+        f"\nTTFT direct p50 {_percentile(direct, 50) * 1000:.2f} ms, via gateway p50 "
+        f"{_percentile(via_gateway, 50) * 1000:.2f} ms"
+    )
+    print(f"TTFT added by gateway: p50 {added_p50 * 1000:.2f} ms, p99 {added_p99 * 1000:.2f} ms")
+    print("Gateway stages before the first chunk (Server-Timing, ms):")
+    for name, samples in stages.items():
+        print(
+            f"  {name:22} p50 {_percentile(samples, 50):6.2f}  p99 {_percentile(samples, 99):6.2f}"
+        )
     assert added_p99 < 0.020

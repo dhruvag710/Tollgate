@@ -20,10 +20,13 @@ from tollgate.auth.cache import KeyCache
 from tollgate.config import Settings, load_providers_file
 from tollgate.db.session import create_engine, create_sessionmaker
 from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
+from tollgate.observability.timing import Timings
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
 from tollgate.routing.router import Router
 from tollgate.usage.ledger import Ledger, LogLedger, Metering
+
+log = logging.getLogger(__name__)
 
 # How long shutdown waits for requests it cut off to record their usage.
 USAGE_RECORD_TIMEOUT_S = 2.0
@@ -44,7 +47,10 @@ class RequestIDMiddleware:
             await self.app(scope, receive, send)
             return
         request_id = str(uuid.uuid4())
-        scope.setdefault("state", {}).update(request_id=request_id, started_at=time.perf_counter())
+        started_at = time.perf_counter()
+        scope.setdefault("state", {}).update(
+            request_id=request_id, started_at=started_at, timings=Timings(started_at)
+        )
 
         async def send_with_id(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -63,6 +69,11 @@ def create_app(
     """Build the gateway. `upstream_transport` lets tests run providers in-process."""
     settings = settings or Settings()
     logging.basicConfig(level=settings.log_level)
+    if settings.uses_development_secrets:
+        log.warning(
+            "DEV_MODE: running with the development KEY_PEPPER/ADMIN_TOKEN. "
+            "Anyone can read these; never use them outside local development."
+        )
     providers_file = load_providers_file(settings.providers_config)
     metering = Metering(ledger or LogLedger())
 

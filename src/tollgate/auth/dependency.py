@@ -39,6 +39,16 @@ async def require_tenant(
     sessions: Annotated[async_sessionmaker[AsyncSession], Depends(get_sessions)],
     cache: Annotated[KeyCache, Depends(get_key_cache)],
 ) -> TenantContext:
+    with request.state.timings.stage("auth"):
+        return await _authenticate(request, settings, sessions, cache)
+
+
+async def _authenticate(
+    request: Request,
+    settings: Settings,
+    sessions: async_sessionmaker[AsyncSession],
+    cache: KeyCache,
+) -> TenantContext:
     raw_key = _bearer_token(request.headers.get("authorization"))
     if raw_key is None:
         raise TollgateError(

@@ -13,9 +13,11 @@ services:
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       DATABASE_URL: postgresql+asyncpg://tollgate:tollgate@postgres:5432/tollgate
       REDIS_URL: redis://redis:6379/0
-      # Local development defaults only: set real secrets in .env anywhere else.
+      # Local development defaults only, accepted because of DEV_MODE (the gateway
+      # warns at startup). Anywhere else: real secrets in .env, and DEV_MODE=false.
       KEY_PEPPER: ${KEY_PEPPER:-dev-only-pepper-change-me}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-only-admin-token}
+      DEV_MODE: ${DEV_MODE:-true}
     depends_on:
       migrate:
         condition: service_completed_successfully

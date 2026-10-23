@@ -11,6 +11,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Matches the docker compose stack's published ports.
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://tollgate:tollgate@localhost:5432/tollgate"
 DEFAULT_REDIS_URL = "redis://localhost:6379/0"
+# The docker compose stack's out-of-the-box secrets, accepted only with dev_mode.
+DEV_KEY_PEPPER = "dev-only-pepper-change-me"
+DEV_ADMIN_TOKEN = "dev-only-admin-token"
 
 
 class Settings(BaseSettings):
@@ -21,6 +24,8 @@ class Settings(BaseSettings):
     upstream_max_connections: int = 1000
     upstream_max_keepalive: int = 200
     log_level: str = "INFO"
+    # Report per-stage timings in a Server-Timing response header (diagnostics).
+    server_timing: bool = False
 
     database_url: str = DEFAULT_DATABASE_URL
     # Bounds every query, so an auth lookup can't outlive a cache invalidation.
@@ -31,6 +36,30 @@ class Settings(BaseSettings):
     key_pepper: SecretStr = Field(min_length=16)
     # The admin API is disabled unless this is set.
     admin_token: SecretStr | None = Field(default=None, min_length=16)
+    # Accept the development secrets above; for local development only.
+    dev_mode: bool = False
+
+    @model_validator(mode="after")
+    def _no_development_secrets(self) -> Self:
+        if self.dev_mode:
+            return self
+        if self.key_pepper.get_secret_value() == DEV_KEY_PEPPER:
+            raise ValueError(
+                "KEY_PEPPER is the development default: set a secret one "
+                "(or DEV_MODE=true for local development only)"
+            )
+        if self.admin_token is not None and self.admin_token.get_secret_value() == DEV_ADMIN_TOKEN:
+            raise ValueError(
+                "ADMIN_TOKEN is the development default: set a secret one, or unset it "
+                "(or DEV_MODE=true for local development only)"
+            )
+        return self
+
+    @property
+    def uses_development_secrets(self) -> bool:
+        return self.key_pepper.get_secret_value() == DEV_KEY_PEPPER or (
+            self.admin_token is not None and self.admin_token.get_secret_value() == DEV_ADMIN_TOKEN
+        )
 
 
 class ProviderConfig(BaseModel):

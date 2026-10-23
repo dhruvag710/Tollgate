@@ -8,6 +8,7 @@ import pytest
 from starlette.types import Message
 
 from tests.helpers import MemoryLedger
+from tollgate.observability.timing import Timings
 from tollgate.providers.base import UpstreamResponse
 from tollgate.streaming.sse import (
     SSEDecoder,
@@ -198,6 +199,8 @@ async def _run(
         client_headers={},
         forward_usage_chunk=False,
         meter=meter,
+        timings=Timings(time.perf_counter()),
+        server_timing=False,
     )
     sent = Sent()
     disconnected = asyncio.Event()
