@@ -4,8 +4,7 @@ from fastapi import Request
 
 from tollgate.config import Settings
 from tollgate.routing.router import Router
-from tollgate.streaming.sse import OpenStreams
-from tollgate.usage.ledger import Ledger
+from tollgate.usage.ledger import Metering
 
 
 def get_settings(request: Request) -> Settings:
@@ -18,11 +17,6 @@ def get_router(request: Request) -> Router:
     return router
 
 
-def get_ledger(request: Request) -> Ledger:
-    ledger: Ledger = request.app.state.ledger
-    return ledger
-
-
-def get_streams(request: Request) -> OpenStreams:
-    streams: OpenStreams = request.app.state.streams
-    return streams
+def get_metering(request: Request) -> Metering:
+    metering: Metering = request.app.state.metering
+    return metering

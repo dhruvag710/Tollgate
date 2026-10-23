@@ -14,15 +14,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from tollgate.api import health
 from tollgate.api.v1 import chat, models
 from tollgate.config import Settings, load_providers_file
-from tollgate.errors import install_error_handlers
+from tollgate.errors import InternalErrorMiddleware, install_error_handlers
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
 from tollgate.routing.router import Router
-from tollgate.streaming.sse import OpenStreams
-from tollgate.usage.ledger import Ledger, LogLedger
+from tollgate.usage.ledger import Ledger, LogLedger, Metering
 
-# How long shutdown waits for cut-off streams to close upstream and record usage.
-STREAM_CLOSE_TIMEOUT_S = 2.0
+# How long shutdown waits for requests it cut off to record their usage.
+USAGE_RECORD_TIMEOUT_S = 2.0
 
 
 class RequestIDMiddleware:
@@ -60,7 +59,7 @@ def create_app(
     settings = settings or Settings()
     logging.basicConfig(level=settings.log_level)
     providers_file = load_providers_file(settings.providers_config)
-    streams = OpenStreams()
+    metering = Metering(ledger or LogLedger())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -73,14 +72,15 @@ def create_app(
         async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
             app.state.router = Router(ProviderRegistry.from_config(providers_file, client))
             yield
-            with anyio.move_on_after(STREAM_CLOSE_TIMEOUT_S):
-                await streams.wait_closed()
+            with anyio.move_on_after(USAGE_RECORD_TIMEOUT_S):
+                await metering.wait_idle()
 
     app = FastAPI(title="Tollgate", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.settings = settings
-    app.state.ledger = ledger or LogLedger()
-    app.state.streams = streams
+    app.state.metering = metering
     install_error_handlers(app)
+    # The last added runs outermost: InternalErrorMiddleware needs the request id.
+    app.add_middleware(InternalErrorMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.include_router(health.router)
     app.include_router(models.router)

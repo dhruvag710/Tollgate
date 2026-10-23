@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 import uvicorn
 import yaml
 
@@ -123,3 +124,23 @@ def write_providers(tmp_path: Path, base_url: str, **provider_overrides: Any) ->
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(data))
     return path
+
+
+def assert_internal_error_response(r: httpx.Response, caplog: pytest.LogCaptureFixture) -> None:
+    """An OpenAI-shaped 500 that gives nothing away, logged in full under the request id."""
+    request_id = r.headers["x-request-id"]
+    assert r.status_code == 500
+    assert r.json() == {
+        "error": {
+            "message": f"Tollgate hit an internal error. Request ID: {request_id}",
+            "type": "api_error",
+            "param": None,
+            "code": "internal_error",
+        }
+    }
+    assert "bug" not in r.text
+    assert "Traceback" not in r.text
+    (record,) = [rec for rec in caplog.records if rec.name == "tollgate.errors"]
+    assert request_id in record.getMessage()
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "bug"

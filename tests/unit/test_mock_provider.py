@@ -1,5 +1,6 @@
 """Phase 1.2: the mock provider. Acceptance: deterministic output given a seed."""
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -7,8 +8,9 @@ from typing import Any
 import httpx
 import pytest
 
-from mock_provider.app import Behaviour, count_prompt_tokens, count_tokens, create_app
-from tests.helpers import run_server
+from mock_provider.app import VOCAB, Behaviour, count_prompt_tokens, count_tokens, create_app
+from tests.helpers import run_server, wait_until
+from tollgate.ratelimit.estimate import estimate_prompt_tokens
 
 MESSAGES = [{"role": "user", "content": "What is a token bucket?"}]
 
@@ -78,20 +80,34 @@ async def test_usage_matches_generated_text() -> None:
     async with _client() as c:
         r = (await _chat(c, headers={"X-Mock-Output-Tokens": "17"})).json()
     content = r["choices"][0]["message"]["content"]
-    assert r["usage"]["completion_tokens"] == count_tokens(content) == 17
-    assert r["usage"]["prompt_tokens"] == count_prompt_tokens(MESSAGES)
+    assert r["usage"]["completion_tokens"] == count_tokens(content, "gpt-4o-mini") == 17
+    assert r["usage"]["prompt_tokens"] == count_prompt_tokens(MESSAGES, "gpt-4o-mini")
     assert r["usage"]["total_tokens"] == r["usage"]["prompt_tokens"] + 17
     assert r["choices"][0]["finish_reason"] == "stop"
 
 
-def test_prompt_token_counting() -> None:
-    # 3 primer + (3 + 6 tokens) + (3 + 1 name + 2 text-part tokens)
-    msgs = [
-        {"role": "system", "content": "Be brief, please!"},
-        {"role": "user", "name": "u", "content": [{"type": "text", "text": "hi there"}]},
+@pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-4", "llama3.1:8b"])
+def test_prompt_counts_equal_tollgate_estimates(model: str) -> None:
+    """Tollgate estimates the prompt of a request the mock never finished; the
+    mock's count for it must be the same number, or ledger and mock disagree."""
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    cases: list[list[dict[str, Any]]] = [
+        MESSAGES,
+        [
+            {"role": "system", "content": "Be brief, please!"},
+            {"role": "user", "name": "u", "content": [{"type": "text", "text": "hi"}, image]},
+        ],
+        [{"role": "assistant", "content": None, "tool_calls": [{"type": "function"}]}],
+        [{"role": "user", "content": {"unexpected": "shape"}}, {"role": "user", "content": ["x"]}],
     ]
-    assert count_tokens("Be brief, please!") == 5
-    assert count_prompt_tokens(msgs) == 3 + (3 + 5) + (3 + 1 + 2)
+    for messages in cases:
+        assert count_prompt_tokens(messages, model) == estimate_prompt_tokens(messages, model)
+
+
+def test_every_vocabulary_word_is_one_token() -> None:
+    # So a completion's token count is its word count however it is split.
+    for word in VOCAB:
+        assert count_tokens(word, "gpt-4o-mini") == count_tokens(" " + word, "gpt-4o-mini") == 1
 
 
 async def test_max_tokens_truncates_with_length_finish() -> None:
@@ -159,15 +175,18 @@ async def test_fail_rate_is_roughly_honoured_and_seedable() -> None:
     assert await failures("123") == first
 
 
-def test_fail_timeout_hangs() -> None:
+def test_fail_timeout_hangs_until_the_client_gives_up() -> None:
     # Real socket: the in-process ASGI transport ignores client timeouts.
-    with run_server(create_app(env={"MOCK_HANG_S": "5"})) as url, pytest.raises(httpx.ReadTimeout):
-        httpx.post(
-            f"{url}/v1/chat/completions",
-            json={"model": "m", "messages": MESSAGES},
-            headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "timeout"},
-            timeout=0.3,
-        )
+    with run_server(create_app(env={"MOCK_HANG_S": "30"})) as url:
+        with pytest.raises(httpx.ReadTimeout):
+            httpx.post(
+                f"{url}/v1/chat/completions",
+                json={"model": "m", "messages": MESSAGES},
+                headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "timeout"},
+                timeout=0.3,
+            )
+        # Received but never answered: its prompt counts as partial.
+        assert wait_until(lambda: _stats(url)["partial_prompt_tokens"] == _prompt("m"))
 
 
 async def test_bad_header_is_400() -> None:
@@ -239,12 +258,15 @@ async def test_stats_count_served_tokens_and_reset() -> None:
         r1 = (await _chat(c)).json()
         await _chat(c, stream=True, stream_options={"include_usage": True})
         await _chat(c, headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "429"})
+        await _chat(c, headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "500"})
         stats = (await c.get("/mock/stats")).json()
-        assert stats["requests"] == 3
+        assert stats["requests"] == 4
         assert stats["completed"] == 2
         assert stats["completion_tokens"] == 2 * r1["usage"]["completion_tokens"]
         assert stats["prompt_tokens"] == 2 * r1["usage"]["prompt_tokens"]
-        assert stats["failures"]["429"] == 1
+        assert stats["failures"]["429"] == stats["failures"]["500"] == 1
+        # Error responses are billed nothing, so count nowhere.
+        assert stats["partial_prompt_tokens"] == stats["partial_completion_tokens"] == 0
         reset = (await c.post("/mock/stats/reset")).json()
     assert reset["requests"] == 0
 
@@ -313,16 +335,21 @@ def test_drop_mid_stream_severs_connection() -> None:
     assert not any("[DONE]" in line for line in received)
     assert stats["failures"]["drop_mid_stream"] == 1
     assert stats["partial_completion_tokens"] == 5
+    assert stats["partial_prompt_tokens"] == _prompt("m")
     assert stats["completed"] == 0
 
 
 def test_drop_non_streaming_severs_connection() -> None:
-    with run_server(create_app(env={})) as url, pytest.raises(httpx.RemoteProtocolError):
-        httpx.post(
-            f"{url}/v1/chat/completions",
-            json={"model": "m", "messages": MESSAGES},
-            headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "drop_mid_stream"},
-        )
+    with run_server(create_app(env={})) as url:
+        with pytest.raises(httpx.RemoteProtocolError):
+            httpx.post(
+                f"{url}/v1/chat/completions",
+                json={"model": "m", "messages": MESSAGES},
+                headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "drop_mid_stream"},
+            )
+        stats = _stats(url)
+    assert (stats["completed"], stats["prompt_tokens"]) == (0, 0)
+    assert stats["partial_prompt_tokens"] == _prompt("m")
 
 
 def test_client_disconnect_is_counted_as_cancelled() -> None:
@@ -345,3 +372,48 @@ def test_client_disconnect_is_counted_as_cancelled() -> None:
     assert stats["streams_cancelled"] == 1
     assert stats["completed"] == 0
     assert 0 < stats["partial_completion_tokens"] < 100
+    assert stats["partial_prompt_tokens"] == _prompt("m")
+
+
+def test_client_leaving_during_latency_counts_as_partial() -> None:
+    with run_server(create_app(env={})) as url:
+        with pytest.raises(httpx.ReadTimeout):
+            httpx.post(
+                f"{url}/v1/chat/completions",
+                json={"model": "m", "messages": MESSAGES},
+                headers={"X-Mock-Latency-Ms": "30000"},
+                timeout=0.3,
+            )
+        assert wait_until(lambda: _stats(url)["partial_prompt_tokens"] == _prompt("m"))
+        stats = _stats(url)
+    assert (stats["completed"], stats["prompt_tokens"], stats["completion_tokens"]) == (0, 0, 0)
+
+
+async def test_cancelled_handler_counts_as_partial() -> None:
+    # In-process, a cancelled client cancels the mock's handler with it.
+    app = create_app(env={})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://mock"
+    ) as c:
+        task = asyncio.create_task(
+            c.post(
+                "/v1/chat/completions",
+                json={"model": "m", "messages": MESSAGES},
+                headers={"X-Mock-Latency-Ms": "30000"},
+            )
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert app.state.stats.partial_prompt_tokens == _prompt("m")
+    assert app.state.stats.completed == 0
+
+
+def _stats(url: str) -> dict[str, Any]:
+    stats: dict[str, Any] = httpx.get(f"{url}/mock/stats").json()
+    return stats
+
+
+def _prompt(model: str) -> int:
+    return count_prompt_tokens(MESSAGES, model)

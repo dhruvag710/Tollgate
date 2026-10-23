@@ -3,8 +3,10 @@
 Streaming lives in test_streaming.py.
 """
 
+import asyncio
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,16 @@ import pytest
 from fastapi import FastAPI
 
 from mock_provider.app import create_app as create_mock_app
-from tests.helpers import TEST_PROVIDERS, MemoryLedger, run_server, write_providers
+from tests.helpers import (
+    TEST_PROVIDERS,
+    MemoryLedger,
+    assert_internal_error_response,
+    run_server,
+    serve,
+    wait_until,
+    write_providers,
+)
+from tollgate.api.v1 import chat
 from tollgate.config import Settings
 from tollgate.main import create_app
 from tollgate.ratelimit.estimate import estimate_prompt_tokens
@@ -255,3 +266,108 @@ def test_missing_provider_key_warns(tmp_path: Path, caplog: pytest.LogCaptureFix
     config = load_providers_file(write_providers(tmp_path, "http://u/v1", api_key_env="NOPE_KEY"))
     ProviderRegistry.from_config(config, httpx.AsyncClient(), env={})
     assert "NOPE_KEY" in caplog.text
+
+
+# --- usage invariant: exactly one event per request that reaches a provider ---
+
+
+async def test_internal_error_before_any_response(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("bug")  # not an httpx error: the provider layer doesn't map it
+
+    ledger = MemoryLedger()
+    r = await _post(_gateway_with(tmp_path, handler, ledger))
+    assert_internal_error_response(r, caplog)
+    (event,) = ledger.events
+    assert event.status == "gateway_error"
+    # The transport never reported sending the request: nothing to estimate.
+    assert (event.prompt_tokens, event.completion_tokens, event.usage_estimated) == (0, 0, False)
+
+
+async def test_internal_error_after_response_keeps_its_usage(
+    client: httpx.AsyncClient,
+    ledger: MemoryLedger,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken_response(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(chat, "JSONResponse", broken_response)
+    r = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": MESSAGES},
+        headers={"X-Mock-Output-Tokens": "9"},
+    )
+    assert_internal_error_response(r, caplog)
+    (event,) = ledger.events
+    assert event.status == "gateway_error"
+    assert event.completion_tokens == 9  # reported by the provider, not estimated
+    assert not event.usage_estimated
+
+
+async def test_shutdown_before_the_request_is_sent_records_zero(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        # A transport that never reports sending: like being cut off mid-connect.
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    ledger = MemoryLedger()
+    app = _gateway_with(tmp_path, handler, ledger)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        task = asyncio.create_task(
+            c.post("/v1/chat/completions", json={"model": "gpt-4o-mini", "messages": MESSAGES})
+        )
+        await entered.wait()
+        task.cancel()  # what uvicorn does to requests still running when its grace period ends
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    (event,) = ledger.events
+    assert event.status == "gateway_shutdown"
+    assert (event.prompt_tokens, event.completion_tokens, event.usage_estimated) == (0, 0, False)
+
+
+def test_shutdown_after_the_request_is_sent_estimates_the_prompt(tmp_path: Path) -> None:
+    """A real uvicorn shutdown cuts off a request the provider is working on."""
+    ledger = MemoryLedger()
+    with serve(create_mock_app(env={}), timeout_graceful_shutdown=0.1) as (mock_url, _):
+        config = write_providers(tmp_path, f"{mock_url}/v1")
+        app = create_app(Settings(providers_config=config), ledger=ledger)
+        with (
+            serve(app, timeout_graceful_shutdown=0.5) as (url, server),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            reply = pool.submit(
+                httpx.post,
+                f"{url}/v1/chat/completions",
+                json={"model": "gpt-4o-mini", "messages": MESSAGES},
+                headers={"X-Mock-Latency-Ms": "30000"},
+                timeout=30,
+            )
+            # Wait until the request has reached the provider.
+            assert wait_until(lambda: _mock_stats(mock_url)["requests"] == 1)
+            server.should_exit = True  # as on SIGTERM
+            assert reply.result(timeout=10).status_code == 500
+            assert wait_until(lambda: len(ledger.events) == 1)
+        # The mock saw the gateway leave and counts the prompt as received, unfinished.
+        assert wait_until(lambda: _mock_stats(mock_url)["partial_prompt_tokens"] > 0)
+        stats = _mock_stats(mock_url)
+    (event,) = ledger.events
+    assert event.status == "gateway_shutdown"
+    assert event.usage_estimated
+    assert event.prompt_tokens == estimate_prompt_tokens(MESSAGES, "gpt-4o-mini")
+    assert event.completion_tokens == 0
+    assert (stats["partial_prompt_tokens"], stats["completed"]) == (event.prompt_tokens, 0)
+
+
+def _mock_stats(mock_url: str) -> dict[str, Any]:
+    stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats").json()
+    return stats

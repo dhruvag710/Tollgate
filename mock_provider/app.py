@@ -17,14 +17,18 @@ Process-only settings: MOCK_MODELS (comma-separated list for /v1/models),
 MOCK_HANG_S (how long `timeout` mode hangs), MOCK_FAIL_SEED (seeds the
 fail/no-fail draws).
 
-Tokens: a "token" is one match of `\\w+|[^\\w\\s]`. Generated text is
-vocabulary words joined by spaces, so completion_tokens is exactly the number
-of words emitted. Prompt tokens add OpenAI-style framing (3 per message + 3).
-This is not tiktoken, but it is self-consistent, which is what ledger
-reconciliation needs.
+Tokens are counted with tiktoken exactly as Tollgate estimates them (same
+model-to-encoding rule, same chat framing), so the ledger's estimates for
+requests the mock never finished answering match the mock's own counts.
+Generated text is vocabulary words joined by spaces, each a single token with
+or without its leading space, so completion_tokens is exactly the number of
+words emitted.
 
-GET /mock/stats reports tokens served in completed responses (the numbers a
-correct ledger must match). Run with ONE worker, or stats are per-process.
+GET /mock/stats reports the tokens a correct ledger must match:
+prompt/completion_tokens from responses delivered in full, and
+partial_prompt/completion_tokens from requests received but not finished
+(dropped, or the client left first). Error responses count in neither, as
+nothing is billed for them. Run with ONE worker, or stats are per-process.
 """
 
 import asyncio
@@ -32,47 +36,70 @@ import hashlib
 import json
 import os
 import random
-import re
 import secrets
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any
 
+import tiktoken
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 FAIL_MODES = ("500", "429", "timeout", "drop_mid_stream")
 DEFAULT_MODELS = "gpt-4o-mini,llama3.1:8b,mock-small"
 
+# Every word is one token with or without a leading space (a test enforces it).
 VOCAB = (
-    "the quick brown fox jumps over lazy dog while gateway routes every request through "
-    "a careful limiter that counts tokens and tracks spend across tenants so nothing slips "
-    "past budget when traffic spikes cache hits save money providers fail often retries "
-    "help streams flow chunk by chunk until done"
+    "the quick brown fox over lazy dog while gateway routes every request through "
+    "a that counts tokens and tracks so nothing past budget when traffic cache hits "
+    "save money providers fail often help streams flow chunk by chunk until done"
 ).split()
 
-_TOKEN_RE = re.compile(r"\w+|[^\w\s]")
+# Prompt counting mirrors tollgate.ratelimit.estimate; a test pins the two together.
+_FALLBACK_ENCODING = "o200k_base"
+_MEDIA_PARTS = frozenset({"image_url", "input_audio", "file"})
 
 
-def count_tokens(text: str) -> int:
-    return len(_TOKEN_RE.findall(text))
+def _encoding(model: str) -> tiktoken.Encoding:
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        return tiktoken.get_encoding(_FALLBACK_ENCODING)
 
 
-def count_prompt_tokens(messages: list[dict[str, Any]]) -> int:
+def count_tokens(text: str, model: str) -> int:
+    return len(_encoding(model).encode(text, disallowed_special=()))
+
+
+def count_prompt_tokens(messages: list[dict[str, Any]], model: str) -> int:
     total = 3  # reply primer
-    for msg in messages:
+    for message in messages:
         total += 3  # per-message framing
-        if msg.get("name"):
-            total += 1
-        content = msg.get("content")
-        if isinstance(content, str):
-            total += count_tokens(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and isinstance(part.get("text"), str):
-                    total += count_tokens(part["text"])
+        for key, value in message.items():
+            total += count_tokens(_as_text(value), model)
+            if key == "name":
+                total += 1
     return total
+
+
+def _as_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_part_text(part) for part in value)
+    return json.dumps(value)
+
+
+def _part_text(part: Any) -> str:
+    if isinstance(part, dict):
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            return str(part["text"])
+        if part.get("type") in _MEDIA_PARTS:
+            return ""
+    return json.dumps(part)
 
 
 def generate_words(seed_material: bytes | None, n: int) -> list[str]:
@@ -141,16 +168,22 @@ def _parse_seed(raw: str) -> int:
 class Stats:
     requests: int = 0
     completed: int = 0
-    prompt_tokens: int = 0  # summed from usage of completed responses
+    prompt_tokens: int = 0  # summed from usage of responses delivered in full
     completion_tokens: int = 0
     failures: dict[str, int] = field(default_factory=lambda: dict.fromkeys(FAIL_MODES, 0))
     streams_cancelled: int = 0  # client went away mid-stream
+    # Requests received but not finished: dropped, or the client left first.
+    partial_prompt_tokens: int = 0
     partial_completion_tokens: int = 0  # tokens streamed before a drop or cancel
 
     def record_completed(self, usage: dict[str, int]) -> None:
         self.completed += 1
         self.prompt_tokens += usage["prompt_tokens"]
         self.completion_tokens += usage["completion_tokens"]
+
+    def record_partial(self, prompt_tokens: int, completion_tokens: int = 0) -> None:
+        self.partial_prompt_tokens += prompt_tokens
+        self.partial_completion_tokens += completion_tokens
 
 
 class MockDrop(Exception):
@@ -169,6 +202,20 @@ def _error(
         status_code=status,
         headers=headers,
     )
+
+
+async def _client_stays(request: Request, seconds: float) -> bool:
+    """Wait `seconds`. Returns False, at once, if the client disconnects first."""
+
+    async def disconnected() -> None:
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    try:
+        await asyncio.wait_for(disconnected(), seconds)
+    except TimeoutError:
+        return True
+    return False
 
 
 def _sse(obj: Any) -> bytes:
@@ -255,7 +302,7 @@ def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
         if seed is not None:
             seed_material = json.dumps([seed, model, messages], sort_keys=True).encode()
         words = generate_words(seed_material, n_tokens)
-        prompt_tokens = count_prompt_tokens(messages)
+        prompt_tokens = count_prompt_tokens(messages, model)
         usage = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": n_tokens,
@@ -264,77 +311,96 @@ def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
 
         st = stats()
         st.requests += 1
-        fail_mode = None
-        if beh.fail_rate > 0 and fail_rng.random() < beh.fail_rate:
-            fail_mode = beh.fail_mode
-            st.failures[fail_mode] += 1
-            if fail_mode == "500":
-                return _error(500, "Mock provider internal error", "server_error")
-            if fail_mode == "429":
-                return _error(
-                    429,
-                    "Mock provider rate limit",
-                    "rate_limit_exceeded",
-                    "rate_limit_exceeded",
-                    headers={"Retry-After": "1"},
+        # Set once a response reaches the client, or a body generator takes
+        # over the counting. Otherwise the request counts as partial.
+        answered = False
+        try:
+            fail_mode = None
+            if beh.fail_rate > 0 and fail_rng.random() < beh.fail_rate:
+                fail_mode = beh.fail_mode
+                st.failures[fail_mode] += 1
+                if fail_mode == "500":
+                    answered = True
+                    return _error(500, "Mock provider internal error", "server_error")
+                if fail_mode == "429":
+                    answered = True
+                    return _error(
+                        429,
+                        "Mock provider rate limit",
+                        "rate_limit_exceeded",
+                        "rate_limit_exceeded",
+                        headers={"Retry-After": "1"},
+                    )
+                if fail_mode == "timeout":
+                    if not await _client_stays(request, hang_s):
+                        return Response()
+                    answered = True
+                    return _error(504, "Mock provider hung past MOCK_HANG_S", "server_error")
+
+            drop = fail_mode == "drop_mid_stream"
+            completion_id = "chatcmpl-" + secrets.token_hex(12)
+            created = int(time.time())
+
+            if body.get("stream"):
+                include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+                answered = True
+                return StreamingResponse(
+                    _stream(
+                        st,
+                        beh,
+                        words,
+                        usage,
+                        finish_reason,
+                        drop,
+                        include_usage,
+                        completion_id,
+                        created,
+                        model,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache"},
                 )
-            if fail_mode == "timeout":
-                await asyncio.sleep(hang_s)
-                return _error(504, "Mock provider hung past MOCK_HANG_S", "server_error")
 
-        drop = fail_mode == "drop_mid_stream"
-        completion_id = "chatcmpl-" + secrets.token_hex(12)
-        created = int(time.time())
-
-        if body.get("stream"):
-            include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            return StreamingResponse(
-                _stream(
-                    st,
-                    beh,
-                    words,
-                    usage,
-                    finish_reason,
-                    drop,
-                    include_usage,
-                    completion_id,
-                    created,
-                    model,
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache"},
-            )
-
-        payload = {
-            "id": completion_id,
-            "object": "chat.completion",
-            "created": created,
-            "model": model,
-            "system_fingerprint": "fp_mock",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": " ".join(words), "refusal": None},
-                    "logprobs": None,
-                    "finish_reason": finish_reason,
-                }
-            ],
-            "usage": usage,
-        }
-        if beh.latency_ms:
-            await asyncio.sleep(beh.latency_ms / 1000)
-        if drop:
-            return StreamingResponse(
-                _truncated(json.dumps(payload).encode()), media_type="application/json"
-            )
-        st.record_completed(usage)
-        return JSONResponse(payload)
+            payload = {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": model,
+                "system_fingerprint": "fp_mock",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": " ".join(words),
+                            "refusal": None,
+                        },
+                        "logprobs": None,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": usage,
+            }
+            if beh.latency_ms and not await _client_stays(request, beh.latency_ms / 1000):
+                return Response()
+            answered = True
+            if drop:
+                return StreamingResponse(
+                    _truncated(st, usage, json.dumps(payload).encode()),
+                    media_type="application/json",
+                )
+            st.record_completed(usage)
+            return JSONResponse(payload)
+        finally:
+            if not answered:
+                st.record_partial(prompt_tokens)
 
     return app
 
 
-async def _truncated(data: bytes) -> AsyncIterator[bytes]:
+async def _truncated(st: Stats, usage: dict[str, int], data: bytes) -> AsyncIterator[bytes]:
     yield data[: len(data) // 2]
+    st.record_partial(usage["prompt_tokens"])
     raise MockDrop("drop_mid_stream")
 
 
@@ -388,12 +454,12 @@ async def _stream(
         st.record_completed(usage)
     except MockDrop:
         finished = True
-        st.partial_completion_tokens += sent
+        st.record_partial(usage["prompt_tokens"], sent)
         raise
     finally:
         if not finished:
             st.streams_cancelled += 1
-            st.partial_completion_tokens += sent
+            st.record_partial(usage["prompt_tokens"], sent)
 
 
 app = create_app()

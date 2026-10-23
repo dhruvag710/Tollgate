@@ -1,6 +1,6 @@
 """Provider for any OpenAI-compatible API: OpenAI, OpenRouter, Ollama, mock."""
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any
 
 import httpx
@@ -31,52 +31,83 @@ class OpenAICompatProvider:
         return headers
 
     async def chat_completion(
-        self, body: dict[str, Any], *, client_headers: Mapping[str, str]
+        self,
+        body: dict[str, Any],
+        *,
+        client_headers: Mapping[str, str],
+        on_sent: Callable[[], None],
     ) -> UpstreamResponse:
+        resp = await self._send(body, self._headers(client_headers), on_sent)
         try:
-            resp = await self._client.post(
-                self._url, json=body, headers=self._headers(client_headers), timeout=self._timeout
-            )
-        except httpx.HTTPError as exc:
-            raise self._transport_error(exc) from exc
-        return self._upstream_response(resp)
+            if resp.status_code >= 400:
+                return await self._error_response(resp)
+            try:
+                await resp.aread()
+            except httpx.HTTPError as exc:
+                raise self._transport_error(exc) from exc
+            data = _json_object(resp)
+            if data is None:
+                raise TollgateError(
+                    502,
+                    f"Upstream provider {self.name!r} returned an invalid response",
+                    "api_error",
+                    "upstream_bad_response",
+                    headers={"X-Tollgate-Provider": self.name},
+                )
+            return UpstreamResponse(resp.status_code, data)
+        finally:
+            await resp.aclose()
 
     async def open_stream(
-        self, body: dict[str, Any], *, client_headers: Mapping[str, str]
+        self,
+        body: dict[str, Any],
+        *,
+        client_headers: Mapping[str, str],
+        on_sent: Callable[[], None],
     ) -> UpstreamResponse | UpstreamStream:
         # identity: a compressing upstream may hold SSE events in its compressor buffer.
         headers = {**self._headers(client_headers), "Accept-Encoding": "identity"}
+        resp = await self._send(body, headers, on_sent)
+        if resp.status_code < 400:
+            return _HttpxStream(resp, self.name)
+        try:
+            return await self._error_response(resp)
+        finally:
+            await resp.aclose()
+
+    async def _send(
+        self, body: dict[str, Any], headers: dict[str, str], on_sent: Callable[[], None]
+    ) -> httpx.Response:
+        async def trace(event: str, info: dict[str, Any]) -> None:
+            # httpcore reports each step; this one means the whole request is out.
+            if event.endswith(".send_request_body.complete"):
+                on_sent()
+
         request = self._client.build_request(
-            "POST", self._url, json=body, headers=headers, timeout=self._timeout
+            "POST",
+            self._url,
+            json=body,
+            headers=headers,
+            timeout=self._timeout,
+            extensions={"trace": trace},
         )
         try:
             resp = await self._client.send(request, stream=True)
         except httpx.HTTPError as exc:
             raise self._transport_error(exc) from exc
-        if resp.status_code < 400:
-            return _HttpxStream(resp, self.name)
+        on_sent()  # a response proves it, whatever the transport
+        return resp
+
+    async def _error_response(self, resp: httpx.Response) -> UpstreamResponse:
+        """The provider answered with an error status. Its body is relayed if it
+        is a JSON object; one that can't be read doesn't change the answer."""
         try:
             await resp.aread()
-        except httpx.HTTPError as exc:
-            raise self._transport_error(exc) from exc
-        finally:
-            await resp.aclose()
-        return self._upstream_response(resp)
-
-    def _upstream_response(self, resp: httpx.Response) -> UpstreamResponse:
-        try:
-            data = resp.json()
-        except ValueError:
+        except httpx.HTTPError:
             data = None
-        if not isinstance(data, dict):
-            raise TollgateError(
-                502,
-                f"Upstream provider {self.name!r} returned an invalid response",
-                "api_error",
-                "upstream_bad_response",
-                headers={"X-Tollgate-Provider": self.name},
-            )
-        return UpstreamResponse(resp.status_code, data, resp.headers.get("retry-after"))
+        else:
+            data = _json_object(resp)
+        return UpstreamResponse(resp.status_code, data or {}, resp.headers.get("retry-after"))
 
     def _transport_error(self, exc: httpx.HTTPError) -> TollgateError:
         headers = {"X-Tollgate-Provider": self.name}
@@ -95,6 +126,14 @@ class OpenAICompatProvider:
             "upstream_unreachable",
             headers=headers,
         )
+
+
+def _json_object(resp: httpx.Response) -> dict[str, Any] | None:
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 class _HttpxStream:

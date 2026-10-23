@@ -8,13 +8,13 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tollgate.config import Settings
-from tollgate.deps import get_ledger, get_router, get_settings, get_streams
+from tollgate.deps import get_metering, get_router, get_settings
 from tollgate.errors import TollgateError, upstream_error_response
 from tollgate.providers.base import Provider
 from tollgate.ratelimit.estimate import generated_text
 from tollgate.routing.router import Router
-from tollgate.streaming.sse import OpenStreams, SSEProxyResponse
-from tollgate.usage.ledger import Ledger, UsageMeter, parse_usage
+from tollgate.streaming.sse import SSEProxyResponse
+from tollgate.usage.ledger import Metering, UsageMeter, parse_usage
 
 router = APIRouter()
 
@@ -63,8 +63,7 @@ async def chat_completions(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     router_: Annotated[Router, Depends(get_router)],
-    ledger: Annotated[Ledger, Depends(get_ledger)],
-    streams: Annotated[OpenStreams, Depends(get_streams)],
+    metering: Annotated[Metering, Depends(get_metering)],
 ) -> Response:
     body = await read_json_body(request, settings.max_request_body_bytes)
     try:
@@ -77,8 +76,7 @@ async def chat_completions(
         ) from exc
 
     provider = router_.route(req.model)
-    meter = UsageMeter(
-        ledger=ledger,
+    meter = metering.meter(
         request_id=request.state.request_id,
         started_at=request.state.started_at,
         model=req.model,
@@ -86,7 +84,8 @@ async def chat_completions(
         messages=req.messages,
     )
     if not req.stream:
-        return await _complete(request, body, provider, meter)
+        async with meter.measure():
+            return await _complete(request, body, provider, meter)
 
     client_options = req.stream_options or {}
     return SSEProxyResponse(
@@ -96,7 +95,6 @@ async def chat_completions(
         client_headers=request.headers,
         forward_usage_chunk=bool(client_options.get("include_usage")),
         meter=meter,
-        streams=streams,
     )
 
 
@@ -104,26 +102,28 @@ async def _complete(
     request: Request, body: dict[str, Any], provider: Provider, meter: UsageMeter
 ) -> Response:
     try:
-        upstream = await provider.chat_completion(body, client_headers=request.headers)
+        upstream = await provider.chat_completion(
+            body, client_headers=request.headers, on_sent=meter.mark_sent
+        )
     except TollgateError:
-        await meter.record("provider_error")
+        meter.settle("provider_error")
         raise
     if upstream.status_code >= 400:
-        await meter.record("provider_error")
+        meter.reported = (0, 0)
+        meter.settle("provider_error")
         return upstream_error_response(upstream, provider.name)
 
-    reported = parse_usage(upstream.body.get("usage"))
-    generated = None
-    if reported is None:
-        choices = upstream.body.get("choices")
-        generated = "".join(
-            generated_text(c.get("message"))
-            for c in (choices if isinstance(choices, list) else [])
-            if isinstance(c, dict)
-        )
-    await meter.record("success", reported=reported, generated=generated)
-    return JSONResponse(
+    meter.reported = parse_usage(upstream.body.get("usage"))
+    choices = upstream.body.get("choices")
+    meter.generated = "".join(
+        generated_text(c.get("message"))
+        for c in (choices if isinstance(choices, list) else [])
+        if isinstance(c, dict)
+    )
+    response = JSONResponse(
         upstream.body,
         status_code=upstream.status_code,
         headers={"X-Tollgate-Provider": provider.name},
     )
+    meter.settle("success")
+    return response

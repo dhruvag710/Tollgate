@@ -2,20 +2,26 @@
 the stream, and cancels the upstream request when the client disconnects."""
 
 import asyncio
+import contextlib
 import json
 import time
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from typing import Any
 
 import anyio
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
-from tollgate.errors import TollgateError, error_body, error_response, upstream_error_response
+from tollgate.errors import (
+    TollgateError,
+    error_body,
+    error_response,
+    internal_error_message,
+    upstream_error_response,
+)
 from tollgate.providers.base import Provider, UpstreamResponse, UpstreamStream, UpstreamStreamError
 from tollgate.ratelimit.estimate import generated_text
-from tollgate.usage.ledger import UsageMeter, UsageStatus, parse_usage
+from tollgate.usage.ledger import UsageMeter, parse_usage
 
 SSE_HEADERS = [
     (b"content-type", b"text/event-stream; charset=utf-8"),
@@ -104,35 +110,6 @@ class StreamTally:
         return True
 
 
-class OpenStreams:
-    """Counts streaming responses still running.
-
-    At shutdown uvicorn cancels streams that outlive its graceful timeout, then
-    runs the app's lifespan shutdown without waiting for them, and asyncio then
-    cancels whatever is left (no shield stops that). The lifespan waits here so
-    cut-off streams can close their upstream and record their usage first.
-    """
-
-    def __init__(self) -> None:
-        self._count = 0
-        self._idle = asyncio.Event()
-        self._idle.set()
-
-    @contextmanager
-    def track(self) -> Iterator[None]:
-        self._count += 1
-        self._idle.clear()
-        try:
-            yield
-        finally:
-            self._count -= 1
-            if self._count == 0:
-                self._idle.set()
-
-    async def wait_closed(self) -> None:
-        await self._idle.wait()
-
-
 class SSEProxyResponse(Response):
     """Streams a chat completion from `provider` to the client.
 
@@ -152,39 +129,36 @@ class SSEProxyResponse(Response):
         client_headers: Mapping[str, str],
         forward_usage_chunk: bool,
         meter: UsageMeter,
-        streams: OpenStreams,
     ) -> None:
         super().__init__()
         self._provider = provider
         self._body = body
         self._client_headers = client_headers
         self._meter = meter
-        self._streams = streams
         self._tally = StreamTally(forward_usage_chunk=forward_usage_chunk)
         self._upstream: UpstreamStream | None = None
-        # Whatever settles the outcome first decides it. It stays None only if
-        # the relay dies on an internal error: that records no usage event, as
-        # on the non-streaming path.
-        self._status: UsageStatus | None = None
         self._started = False  # http.response.start sent
         self._responded = False  # final message sent, or about to be
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        with self._streams.track():
+        # measure() records exactly one usage event, settling a server shutdown
+        # (cancellation from outside; relay_scope absorbs the watcher's) as
+        # gateway_shutdown and any other exception as gateway_error.
+        async with self._meter.measure():
             relay_scope = anyio.CancelScope()
             watcher = asyncio.create_task(self._cancel_on_disconnect(receive, relay_scope))
             try:
                 with relay_scope:
                     await self._relay(scope, receive, send)
-            except asyncio.CancelledError:
-                # relay_scope absorbs the watcher's cancellation, so this one came
-                # from outside: the server is shutting down and cut the stream off.
-                self._settle("gateway_shutdown")
+            except Exception:
+                await self._end_with_internal_error(send)
                 raise
             finally:
                 watcher.cancel()
-                with anyio.CancelScope(shield=True):
-                    await self._finish()
+                self._report_usage()
+                if self._upstream is not None:
+                    with anyio.CancelScope(shield=True):
+                        await self._upstream.aclose()
 
     async def _cancel_on_disconnect(self, receive: Receive, relay_scope: anyio.CancelScope) -> None:
         while (await receive())["type"] != "http.disconnect":
@@ -192,24 +166,38 @@ class SSEProxyResponse(Response):
         # Servers also report a disconnect once the response is complete, and
         # the relay may still be reading the upstream to its end by then.
         if not self._responded:
-            self._settle("client_disconnect")
+            self._meter.settle("client_disconnect")
             relay_scope.cancel()
 
-    def _settle(self, status: UsageStatus) -> None:
-        if self._status is None:
-            self._status = status
+    def _report_usage(self) -> None:
+        tally, meter = self._tally, self._meter
+        if tally.usage is not None:
+            meter.reported = tally.usage
+        meter.generated = tally.generated
+        meter.first_token_at = tally.first_token_at
+
+    async def _end_with_internal_error(self, send: Send) -> None:
+        """End a stream the client is already reading with the same kind of error
+        event an upstream failure gets. The details go only to the server log
+        (InternalErrorMiddleware); a stream not yet started gets its JSON 500."""
+        if not self._started or self._responded:
+            return
+        event = error_event(internal_error_message(self._meter.request_id), "internal_error")
+        with contextlib.suppress(Exception):  # sending may be what failed
+            await self._send(send, event, more_body=False)
 
     async def _relay(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             opened = await self._provider.open_stream(
-                self._body, client_headers=self._client_headers
+                self._body, client_headers=self._client_headers, on_sent=self._meter.mark_sent
             )
         except TollgateError as exc:
-            self._settle("provider_error")
+            self._meter.settle("provider_error")
             await self._respond(error_response(exc), scope, receive, send)
             return
         if isinstance(opened, UpstreamResponse):
-            self._settle("provider_error")
+            self._meter.reported = (0, 0)  # an error response: nothing billed
+            self._meter.settle("provider_error")
             await self._respond(
                 upstream_error_response(opened, self._provider.name), scope, receive, send
             )
@@ -231,7 +219,7 @@ class SSEProxyResponse(Response):
                 if tally.done:
                     # [DONE] ends the client's response, so the outcome is settled
                     # now, even though the upstream is still read to its end.
-                    self._settle("provider_error" if tally.upstream_error else "success")
+                    self._meter.settle("provider_error" if tally.upstream_error else "success")
                 await self._send(
                     send, b"".join(e + b"\n\n" for e in events), more_body=not tally.done
                 )
@@ -242,14 +230,14 @@ class SSEProxyResponse(Response):
             return
         if failure is None and (tally.finished or tally.upstream_error):
             # Any upstream error event has already been forwarded to the client.
-            self._settle("provider_error" if tally.upstream_error else "success")
+            self._meter.settle("provider_error" if tally.upstream_error else "success")
             await self._send(send, b"", more_body=False)
             return
         if failure is None:
             failure = UpstreamStreamError(
                 f"Upstream provider {self._provider.name!r} ended the stream early", timeout=False
             )
-        self._settle("provider_error")
+        self._meter.settle("provider_error")
         code = "upstream_timeout" if failure.timeout else "upstream_stream_error"
         if self._started:
             await self._send(send, error_event(str(failure), code), more_body=False)
@@ -278,17 +266,3 @@ class SSEProxyResponse(Response):
     ) -> None:
         self._responded = True
         await response(scope, receive, send)
-
-    async def _finish(self) -> None:
-        if self._upstream is not None:
-            await self._upstream.aclose()
-        if self._status is None:
-            return  # an internal error; see __init__
-        tally = self._tally
-        await self._meter.record(
-            self._status,
-            reported=tally.usage,
-            # Without an open upstream stream nothing was generated or billed.
-            generated=tally.generated if self._upstream is not None else None,
-            first_token_at=tally.first_token_at,
-        )

@@ -10,14 +10,13 @@ from starlette.types import Message
 from tests.helpers import MemoryLedger
 from tollgate.providers.base import UpstreamResponse
 from tollgate.streaming.sse import (
-    OpenStreams,
     SSEDecoder,
     SSEProxyResponse,
     StreamTally,
     error_event,
     event_data,
 )
-from tollgate.usage.ledger import UsageMeter
+from tollgate.usage.ledger import Metering
 
 
 def test_decoder_reassembles_events_across_reads() -> None:
@@ -133,17 +132,29 @@ class LingeringStream:
 class FakeProvider:
     name = "fake"
 
-    def __init__(self, stream: LingeringStream) -> None:
+    def __init__(self, stream: LingeringStream, open_error: Exception | None = None) -> None:
         self.stream = stream
+        self.open_error = open_error
 
     async def chat_completion(
-        self, body: dict[str, Any], *, client_headers: Mapping[str, str]
+        self,
+        body: dict[str, Any],
+        *,
+        client_headers: Mapping[str, str],
+        on_sent: Callable[[], None],
     ) -> UpstreamResponse:
         raise NotImplementedError
 
     async def open_stream(
-        self, body: dict[str, Any], *, client_headers: Mapping[str, str]
+        self,
+        body: dict[str, Any],
+        *,
+        client_headers: Mapping[str, str],
+        on_sent: Callable[[], None],
     ) -> LingeringStream:
+        if self.open_error is not None:
+            raise self.open_error  # before anything was sent
+        on_sent()
         return self.stream
 
 
@@ -168,11 +179,11 @@ class Sent:
 
 
 async def _run(
-    stream: LingeringStream, streams: OpenStreams | None = None
-) -> tuple["asyncio.Task[None]", Sent, asyncio.Event, MemoryLedger]:
+    stream: LingeringStream, open_error: Exception | None = None
+) -> tuple["asyncio.Task[None]", Sent, asyncio.Event, MemoryLedger, Metering]:
     ledger = MemoryLedger()
-    meter = UsageMeter(
-        ledger=ledger,
+    metering = Metering(ledger)
+    meter = metering.meter(
         request_id="r1",
         started_at=time.perf_counter(),
         model="gpt-4o-mini",
@@ -180,12 +191,11 @@ async def _run(
         messages=[{"role": "user", "content": "hi"}],
     )
     response = SSEProxyResponse(
-        provider=FakeProvider(stream),
+        provider=FakeProvider(stream, open_error),
         body={},
         client_headers={},
         forward_usage_chunk=False,
         meter=meter,
-        streams=streams or OpenStreams(),
     )
     sent = Sent()
     disconnected = asyncio.Event()
@@ -195,12 +205,12 @@ async def _run(
         return {"type": "http.disconnect"}
 
     task = asyncio.create_task(response({"type": "http"}, receive, sent))
-    return task, sent, disconnected, ledger
+    return task, sent, disconnected, ledger, metering
 
 
 async def test_response_ends_at_done_while_upstream_lingers() -> None:
     stream = LingeringStream(_event({"content": "hi"}, "stop") + b"data: [DONE]\n\n")
-    task, sent, disconnected, ledger = await _run(stream)
+    task, sent, disconnected, ledger, _ = await _run(stream)
     await sent.wait_for(lambda m: bool(m) and m[-1].get("more_body") is False)
     assert sent.messages[-1]["body"].endswith(b"data: [DONE]\n\n")
     # Servers report a disconnect once the response is complete. That must
@@ -217,7 +227,7 @@ async def test_response_ends_at_done_while_upstream_lingers() -> None:
 
 async def test_disconnect_mid_stream_cancels_relay_and_closes_upstream() -> None:
     stream = LingeringStream(_event({"content": "hello"}))
-    task, sent, disconnected, ledger = await _run(stream)
+    task, sent, disconnected, ledger, _ = await _run(stream)
     await sent.wait_for(lambda m: len(m) == 2)  # response start + first event
     disconnected.set()
     async with asyncio.timeout(2):
@@ -234,13 +244,12 @@ async def test_shutdown_mid_stream_records_gateway_shutdown() -> None:
     """uvicorn cancels the request task once its graceful shutdown timeout
     expires. That is the gateway cutting the stream off, not the client."""
     stream = LingeringStream(_event({"content": "hello"}))
-    streams = OpenStreams()
-    task, sent, _, ledger = await _run(stream, streams)
+    task, sent, _, ledger, metering = await _run(stream)
     await sent.wait_for(lambda m: len(m) == 2)
     task.cancel()
     # What the app's lifespan shutdown waits on before tearing anything down.
     async with asyncio.timeout(2):
-        await streams.wait_closed()
+        await metering.wait_idle()
     (event,) = ledger.events
     assert event.status == "gateway_shutdown"
     assert event.usage_estimated
@@ -250,33 +259,41 @@ async def test_shutdown_mid_stream_records_gateway_shutdown() -> None:
         await task
 
 
-async def test_internal_error_records_no_usage_event() -> None:
+async def test_internal_error_mid_stream_records_gateway_error() -> None:
     stream = LingeringStream(_event({"content": "hello"}), error=RuntimeError("bug"))
-    task, _, _, ledger = await _run(stream)
+    task, sent, _, ledger, _ = await _run(stream)
     with pytest.raises(RuntimeError, match="bug"):
         await task
     assert stream.closed
-    assert ledger.events == []
+    # The client's stream ends with an error event that gives nothing away.
+    last = sent.messages[-1]
+    assert last["more_body"] is False
+    body = json.loads(event_data(last["body"].strip()) or "")
+    assert body["error"]["code"] == "internal_error"
+    assert "r1" in body["error"]["message"]
+    assert b"bug" not in last["body"]
+    (event,) = ledger.events
+    assert event.status == "gateway_error"
+    # Whatever is known: the prompt and the one token relayed, estimated.
+    assert event.usage_estimated
+    assert event.completion_tokens == 1
 
 
-async def test_open_streams_wait_closed() -> None:
-    streams = OpenStreams()
-    async with asyncio.timeout(1):
-        await streams.wait_closed()  # nothing open
-    with streams.track(), streams.track():
-        pass
-    with streams.track(), pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.1):
-            await streams.wait_closed()  # one stream still open
-    async with asyncio.timeout(1):
-        await streams.wait_closed()
+async def test_internal_error_before_upstream_opens_records_zero_tokens() -> None:
+    stream = LingeringStream(b"")
+    task, _, _, ledger, _ = await _run(stream, open_error=RuntimeError("bug"))
+    with pytest.raises(RuntimeError, match="bug"):
+        await task
+    (event,) = ledger.events
+    assert event.status == "gateway_error"
+    assert (event.prompt_tokens, event.completion_tokens, event.usage_estimated) == (0, 0, False)
 
 
 async def test_shutdown_after_done_keeps_success() -> None:
     """A shutdown that only interrupts reading the upstream to its end, after
     the client already has the whole response, doesn't relabel the request."""
     stream = LingeringStream(_event({"content": "hi"}, "stop") + b"data: [DONE]\n\n")
-    task, sent, _, ledger = await _run(stream)
+    task, sent, _, ledger, _ = await _run(stream)
     await sent.wait_for(lambda m: bool(m) and m[-1].get("more_body") is False)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

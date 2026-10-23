@@ -1,5 +1,6 @@
 """OpenAI-shaped error responses, so client SDKs parse them natively."""
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -7,8 +8,11 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tollgate.providers.base import UpstreamResponse
+
+log = logging.getLogger(__name__)
 
 
 class TollgateError(Exception):
@@ -30,6 +34,11 @@ class TollgateError(Exception):
 
 def error_body(message: str, type_: str, code: str | None = None) -> dict[str, Any]:
     return {"error": {"message": message, "type": type_, "param": None, "code": code}}
+
+
+def internal_error_message(request_id: str | None) -> str:
+    """What a client is told about an internal error: nothing but how to report it."""
+    return f"Tollgate hit an internal error. Request ID: {request_id}"
 
 
 def error_response(exc: TollgateError) -> JSONResponse:
@@ -99,3 +108,37 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(TollgateError, _tollgate_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, _http_error_handler)
+
+
+class InternalErrorMiddleware:
+    """Turns an unhandled exception into an OpenAI-shaped 500, and logs it with
+    its traceback under the request id. The response body carries neither the
+    traceback nor the exception's message. Must run inside RequestIDMiddleware.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracked_send)
+        except Exception:
+            request_id = scope.get("state", {}).get("request_id")
+            log.exception(
+                "internal error, request_id=%s", request_id, extra={"request_id": request_id}
+            )
+            if started:
+                return  # too late for a status code; a stream ends itself with an error event
+            body = error_body(internal_error_message(request_id), "api_error", "internal_error")
+            await JSONResponse(body, status_code=500)(scope, receive, send)

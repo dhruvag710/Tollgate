@@ -10,10 +10,13 @@ come in later phases; until then each request's usage event is written to the lo
 Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
 always asks the provider for the final usage chunk, but only forwards it if the client
 asked for it too. If the client disconnects, the upstream request is cancelled and the
-partial usage is recorded, estimated with tiktoken. A stream cut off by a gateway shutdown
-is handled the same way and recorded as `gateway_shutdown`. An upstream failure after the first
+partial usage is recorded, estimated with tiktoken. An upstream failure after the first
 event ends the stream with an OpenAI-style error event; a failure before it is a normal
 HTTP error.
+
+Every request that reaches a provider produces exactly one usage event, whatever happens:
+`success`, `provider_error`, `client_disconnect`, `gateway_shutdown` (cut off by a shutdown)
+or `gateway_error` (an internal error), with whatever usage is known. See SPEC.md §4.
 
 ## Quickstart
 

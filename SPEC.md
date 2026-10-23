@@ -170,6 +170,8 @@ client
 [10] Store in cache if cacheable (v2)
 ```
 
+**Usage invariant:** every request that reaches a provider (step [7]) produces exactly one usage event, whatever happens: `success`, `provider_error`, `client_disconnect`, `gateway_shutdown` (cut off by a gateway shutdown) or `gateway_error` (an internal error in the gateway). Streaming and non-streaming alike. The event records whatever usage is known: what the provider reported, otherwise, once the request has been sent, a tiktoken estimate (`usage_estimated = TRUE`) of the prompt plus any completion text received, since the provider may bill a request it received even if no response comes back. It records zero tokens only if the request was never sent, or if the provider answered with an error status (nothing is billed for those). Shutdown waits for cut-off requests to record their events before closing anything.
+
 **Response headers added:** `X-Request-ID`, `X-Tollgate-Provider`, `X-Tollgate-Cache: HIT|MISS|BYPASS`, `X-RateLimit-Limit-Requests`, `X-RateLimit-Remaining-Requests`, `X-RateLimit-Remaining-Tokens`, `Retry-After` (on 429).
 
 **Error format:** always the OpenAI shape, so SDKs parse it:
@@ -219,7 +221,7 @@ CREATE TABLE usage_events (
   cost_usd           NUMERIC(12,6) NOT NULL DEFAULT 0,
   saved_cost_usd     NUMERIC(12,6) NOT NULL DEFAULT 0,   -- v2: cache hits
   cache_status       TEXT NOT NULL DEFAULT 'MISS',       -- HIT | MISS | BYPASS
-  status             TEXT NOT NULL,              -- success | provider_error | client_disconnect | gateway_shutdown | rate_limited
+  status             TEXT NOT NULL,              -- success | provider_error | client_disconnect | gateway_shutdown | gateway_error | rate_limited
   attempts           INT  NOT NULL DEFAULT 1,
   latency_ms         INT,
   ttft_ms            INT,                        -- time to first token

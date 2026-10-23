@@ -26,6 +26,7 @@ from mock_provider.app import count_prompt_tokens
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
     MemoryLedger,
+    assert_internal_error_response,
     run_server,
     run_uvicorn_process,
     serve,
@@ -35,6 +36,7 @@ from tests.helpers import (
 from tollgate.config import Settings
 from tollgate.main import create_app
 from tollgate.ratelimit.estimate import count_tokens, estimate_prompt_tokens
+from tollgate.streaming import sse
 
 MODEL = "gpt-4o-mini"
 MESSAGES = [{"role": "user", "content": "hello"}]
@@ -80,7 +82,10 @@ async def test_usage_captured_without_forwarding_unrequested_chunk(
     (event,) = ledger.events
     assert event.status == "success"
     assert not event.usage_estimated
-    assert (event.prompt_tokens, event.completion_tokens) == (count_prompt_tokens(MESSAGES), 7)
+    assert (event.prompt_tokens, event.completion_tokens) == (
+        count_prompt_tokens(MESSAGES, MODEL),
+        7,
+    )
     assert event.ttft_ms is not None
     assert event.latency_ms >= event.ttft_ms
 
@@ -327,20 +332,85 @@ async def test_upstream_unreachable(tmp_path: Path, exc: Exception, status: int,
 
 
 @pytest.mark.parametrize(
-    ("error_body", "code"),
-    [
-        (Scripted(b"<html>down</html>"), "upstream_bad_response"),
-        (Scripted(b'{"err', httpx.ReadError("reset")), "upstream_unreachable"),
-    ],
+    "error_body",
+    [Scripted(b"<html>down</html>"), Scripted(b'{"err', httpx.ReadError("reset"))],
 )
-async def test_unusable_error_body(tmp_path: Path, error_body: Scripted, code: str) -> None:
+async def test_error_status_with_unusable_body_keeps_its_status(
+    tmp_path: Path, error_body: Scripted
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, stream=error_body)
 
-    async with scripted_gateway(tmp_path, handler) as (client, _):
+    async with scripted_gateway(tmp_path, handler) as (client, ledger):
         r = await client.post("/v1/chat/completions", json=STREAM_BODY)
-    assert r.status_code == 502
-    assert r.json()["error"]["code"] == code
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "upstream_error"
+    # The provider answered, with an error: nothing billed, nothing estimated.
+    (event,) = ledger.events
+    assert (event.status, event.prompt_tokens, event.usage_estimated) == (
+        "provider_error",
+        0,
+        False,
+    )
+
+
+def fail_on_event(n: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the relay hit an internal error while handling upstream event `n`."""
+    real = sse.event_data
+    calls = 0
+
+    def event_data(event: bytes) -> str | None:
+        nonlocal calls
+        calls += 1
+        if calls == n:
+            raise RuntimeError("bug")
+        return real(event)
+
+    monkeypatch.setattr(sse, "event_data", event_data)
+
+
+async def test_internal_error_before_first_event_is_an_openai_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    fail_on_event(1, monkeypatch)
+    async with scripted_gateway(tmp_path, upstream(ROLE, token("hi", "stop"), DONE)) as (
+        client,
+        ledger,
+    ):
+        r = await client.post("/v1/chat/completions", json=STREAM_BODY)
+    assert_internal_error_response(r, caplog)
+    (event,) = ledger.events
+    assert event.status == "gateway_error"
+    assert event.usage_estimated  # the request was sent; its prompt may be billed
+    assert event.completion_tokens == 0
+
+
+async def test_internal_error_mid_stream_ends_with_an_error_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    fail_on_event(3, monkeypatch)  # role chunk, "hello", then the failure
+    script = upstream(ROLE, token("hello"), token(" world", "stop"), DONE)
+    async with scripted_gateway(tmp_path, script) as (client, ledger):
+        r = await client.post("/v1/chat/completions", json=STREAM_BODY)
+    request_id = r.headers["x-request-id"]
+    assert r.status_code == 200  # already sent with the first event
+    last = json.loads(r.text.strip().split("\n\n")[-1].removeprefix("data: "))
+    assert last == {
+        "error": {
+            "message": f"Tollgate hit an internal error. Request ID: {request_id}",
+            "type": "api_error",
+            "param": None,
+            "code": "internal_error",
+        }
+    }
+    assert "bug" not in r.text
+    assert "[DONE]" not in r.text
+    (record,) = [rec for rec in caplog.records if rec.name == "tollgate.errors"]
+    assert request_id in record.getMessage()
+    assert record.exc_info is not None
+    (event,) = ledger.events
+    assert event.status == "gateway_error"
+    assert event.completion_tokens == 1  # "hello" reached the client
 
 
 # --- real sockets ----------------------------------------------------------------
