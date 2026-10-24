@@ -8,13 +8,11 @@ measured in Redis time; that is exactly 100 whenever the burst fits in 0.6 s.
 The barrier variant of C1 holds every request at the limiter until all have
 arrived, then releases them together, which pins it to exactly 100.
 
-Each burst opens all its connections first, then writes every request before
-reading any reply: an HTTP client library spends too long per request to send
-500 at once. Keys are cached beforehand, so each check is one Redis call.
+Bursts are truly concurrent (tests/concurrency/burst.py), and keys are cached
+beforehand, so each check is one Redis call.
 """
 
 import asyncio
-import json
 import os
 import platform
 import re
@@ -22,16 +20,15 @@ import time
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import h11
 import httpx
 from redis.asyncio import Redis
 from testcontainers.core.container import DockerContainer
 
+from tests.concurrency.burst import Reply, burst, redis_now
 from tests.helpers import (
     ROOT,
     MemoryLedger,
@@ -53,109 +50,6 @@ BURST = 500
 
 def chat(**fields: Any) -> dict[str, Any]:
     return {"model": MODEL, "messages": MESSAGES, "max_tokens": 10, **fields}
-
-
-async def redis_now(redis: Redis) -> float:
-    seconds, micros = await redis.time()
-    return seconds + micros / 1e6
-
-
-@dataclass(frozen=True)
-class Reply:
-    status_code: int
-    headers: dict[str, str]  # names lowercased
-    body: bytes
-
-    def json(self) -> Any:
-        return json.loads(self.body)
-
-
-def _request(
-    url: str, method: str, target: str, headers: dict[str, str], body: bytes = b""
-) -> list[h11.Event]:
-    return [
-        h11.Request(
-            method=method,
-            target=target,
-            headers=[
-                ("Host", urlsplit(url).netloc),
-                ("Content-Type", "application/json"),
-                ("Content-Length", str(len(body))),
-                ("Connection", "close"),
-                *headers.items(),
-            ],
-        ),
-        h11.Data(data=body),
-        h11.EndOfMessage(),
-    ]
-
-
-async def _reply(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, request: list[h11.Event]
-) -> Reply:
-    conn = h11.Connection(h11.CLIENT)
-    for sent in request:
-        conn.send(sent)  # already written; this only advances the parser's state
-    status, headers, body = 0, {}, b""
-    while True:
-        event = conn.next_event()
-        if event is h11.NEED_DATA:
-            conn.receive_data(await reader.read(65536))
-        elif isinstance(event, h11.Response):
-            status = event.status_code
-            headers = {k.decode().lower(): v.decode() for k, v in event.headers}
-        elif isinstance(event, h11.Data):
-            body += event.data
-        elif isinstance(event, h11.EndOfMessage):
-            writer.close()
-            return Reply(status, headers, body)
-
-
-async def _fire(
-    url: str, request: list[h11.Event], n: int, redis: Redis
-) -> tuple[list[Reply], float]:
-    """`request` on `n` connections at once, and how long they took in Redis time."""
-    packer = h11.Connection(h11.CLIENT)
-    packed = b"".join(packer.send(event) or b"" for event in request)
-    parts = urlsplit(url)
-    conns = await asyncio.gather(
-        *(asyncio.open_connection(parts.hostname, parts.port) for _ in range(n))
-    )
-    started = await redis_now(redis)
-    for _, writer in conns:
-        writer.write(packed)
-    replies = await asyncio.wait_for(
-        asyncio.gather(*(_reply(r, w, request) for r, w in conns)), timeout=60
-    )
-    return list(replies), await redis_now(redis) - started
-
-
-async def burst(
-    url: str, key: str, n: int, body: dict[str, Any], headers: dict[str, str] | None = None
-) -> tuple[list[Reply], float]:
-    """`n` concurrent chat requests, and how long they took in Redis time."""
-    auth = {"Authorization": f"Bearer {key}"}
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
-    try:
-        async with httpx.AsyncClient(base_url=url, timeout=10) as client:
-            # Fill the key cache: a key's first two sightings read Postgres.
-            for _ in range(6):
-                assert (await client.get("/v1/models", headers=auth)).status_code == 200
-        # Then a concurrent wave, which isn't rate limited, so every gateway has
-        # its Redis connections open before the burst. While they open, requests
-        # left waiting for one past REDIS_TIMEOUT_S fail closed with a 503.
-        models, _ = await _fire(url, _request(url, "GET", "/v1/models", auth), n, redis)
-        assert 200 in {r.status_code for r in models} <= {200, 503}
-        chat = _request(
-            url,
-            "POST",
-            "/v1/chat/completions",
-            {**auth, **(headers or {})},
-            json.dumps(body).encode(),
-        )
-        return await _fire(url, chat, n, redis)
-    finally:
-        await redis.aclose()
 
 
 def admitted(replies: list[Reply]) -> int:

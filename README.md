@@ -57,7 +57,9 @@ refunded or charged. Responses carry `X-RateLimit-Limit-Requests`,
 limit gets an OpenAI-shaped 429 (`rpm_exceeded` or `tpm_exceeded`) with `Retry-After`
 taken from the bucket. A request whose reservation exceeds the whole TPM limit gets
 `request_too_large`, without `Retry-After`. If Redis is down, requests are refused with
-503 rather than let through.
+503 rather than let through. Each gateway opens its Redis connections at startup
+(`REDIS_MIN_CONNECTIONS`, the whole pool by default), so a freshly started gateway can
+take a burst; it still starts if Redis is down.
 
 To run three gateway replicas behind nginx, sharing Postgres and Redis:
 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d`.

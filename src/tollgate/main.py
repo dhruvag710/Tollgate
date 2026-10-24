@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 import anyio
 import httpx
 from fastapi import FastAPI
-from redis.asyncio import BlockingConnectionPool, Redis
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tollgate.api import health
@@ -24,6 +23,7 @@ from tollgate.observability.timing import Timings
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter
+from tollgate.redis_pool import create_redis, open_connections
 from tollgate.routing.router import Router
 from tollgate.usage.ledger import Ledger, LogLedger, Metering
 
@@ -89,22 +89,17 @@ def create_app(
         # Both connect lazily: the gateway starts while either is briefly down,
         # and requests fail closed meanwhile (/readyz reports it).
         engine = create_engine(settings)
-        redis = Redis(
-            connection_pool=BlockingConnectionPool.from_url(
-                settings.redis_url,
-                max_connections=settings.redis_max_connections,
-                timeout=settings.redis_timeout_s,  # waiting for a free connection
-                decode_responses=True,
-                socket_timeout=settings.redis_timeout_s,
-                socket_connect_timeout=settings.redis_timeout_s,
-            )
-        )
+        redis = create_redis(settings)
         app.state.engine = engine
         app.state.sessions = create_sessionmaker(engine)
         app.state.redis = redis
         app.state.key_cache = KeyCache(redis)
         app.state.limiter = metering.limiter = RateLimiter(redis)
         try:
+            # Before serving, so a cold gateway can take a burst (best effort).
+            await open_connections(
+                redis, min(settings.redis_min_connections, settings.redis_max_connections)
+            )
             async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
                 app.state.router = Router(ProviderRegistry.from_config(providers_file, client))
                 yield
