@@ -43,8 +43,9 @@ async def test_stages_reported(stream: bool, upstream: list[str]) -> None:
         r = await client.post("/v1/chat/completions", json={**CHAT, "stream": stream})
     assert r.status_code == 200
     assert _stages(r.headers["server-timing"]) == [
-        "auth",
         "body",
+        "estimate",
+        "auth",
         *upstream,
         "other",
         "gateway",

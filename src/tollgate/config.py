@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     db_command_timeout_s: float = 5.0
     redis_url: str = DEFAULT_REDIS_URL
     redis_timeout_s: float = 1.0
+    # A bounded pool: under a burst, commands wait for a connection instead of
+    # each opening its own.
+    redis_max_connections: int = 100
+    # TPM tokens reserved for the completion of a request that sets no max_tokens.
+    tpm_default_max_tokens: int = 1024
     # HMAC key for stored API key hashes. Changing it invalidates every key.
     key_pepper: SecretStr = Field(min_length=16)
     # The admin API is disabled unless this is set.

@@ -85,3 +85,12 @@ def _part_text(part: Any) -> str:
         if part.get("type") in _MEDIA_PARTS:
             return ""
     return json.dumps(part)
+
+
+def reservation_tokens(
+    messages: list[dict[str, Any]], model: str, max_tokens: int | None, default_max_tokens: int
+) -> int:
+    """TPM tokens to hold while a request runs: its prompt, plus the most it may
+    generate (`default_max_tokens` if it sets no limit). Reconciled afterwards."""
+    completion = default_max_tokens if max_tokens is None else max_tokens
+    return estimate_prompt_tokens(messages, model) + completion

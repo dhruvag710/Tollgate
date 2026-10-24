@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.auth.cache import KeyCache
 from tollgate.config import Settings
+from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.routing.router import Router
 from tollgate.usage.ledger import Metering
 
@@ -35,3 +36,8 @@ async def get_sessions(request: Request) -> async_sessionmaker[AsyncSession]:
 async def get_key_cache(request: Request) -> KeyCache:
     cache: KeyCache = request.app.state.key_cache
     return cache
+
+
+async def get_limiter(request: Request) -> RateLimiter:
+    limiter: RateLimiter = request.app.state.limiter
+    return limiter

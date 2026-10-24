@@ -13,13 +13,20 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal, Protocol
 
 import anyio
+from redis.exceptions import RedisError
 
 from tollgate.ratelimit import estimate
+from tollgate.ratelimit.limiter import RateLimiter, Reservation
 
 log = logging.getLogger(__name__)
 
 UsageStatus = Literal[
-    "success", "provider_error", "client_disconnect", "gateway_shutdown", "gateway_error"
+    "success",
+    "provider_error",
+    "client_disconnect",
+    "gateway_shutdown",
+    "gateway_error",
+    "rate_limited",
 ]
 
 
@@ -29,7 +36,7 @@ class UsageEvent:
     tenant_id: str
     api_key_id: str
     model: str
-    provider: str
+    provider: str | None  # None if the request never got as far as routing
     status: UsageStatus
     prompt_tokens: int
     completion_tokens: int
@@ -71,6 +78,8 @@ class Metering:
 
     def __init__(self, ledger: Ledger) -> None:
         self.ledger = ledger
+        # Settles TPM reservations as usage is recorded. Set once Redis is up.
+        self.limiter: RateLimiter | None = None
         self._open = 0  # meters measuring, or still recording their event
         self._idle = asyncio.Event()
         self._idle.set()
@@ -85,9 +94,63 @@ class Metering:
         model: str,
         provider: str,
         messages: list[dict[str, Any]],
+        reservation: Reservation | None = None,
     ) -> "UsageMeter":
-        return UsageMeter(
+        meter = UsageMeter(
             self, request_id, tenant_id, api_key_id, started_at, model, provider, messages
+        )
+        meter.reservation = reservation
+        return meter
+
+    def reconcile(self, reservation: Reservation | None, used: int) -> None:
+        """Reconcile a TPM reservation with the tokens actually used, in the
+        background: it is a second Redis call, and needn't hold up a response.
+        Counted as open, so shutdown waits for it too."""
+        if reservation is None or self.limiter is None:
+            return
+        self._opened()
+        task = asyncio.create_task(self._reconcile(self.limiter, reservation, used))
+        task.add_done_callback(self._closed)
+
+    @staticmethod
+    async def _reconcile(limiter: RateLimiter, reservation: Reservation, used: int) -> None:
+        # Best effort: if Redis is down the bucket stays charged the whole
+        # reservation, which only errs towards admitting less, and refill
+        # clears it within a minute.
+        try:
+            await limiter.reconcile(reservation, used)
+        except (RedisError, OSError, TimeoutError) as exc:
+            log.warning("could not reconcile a TPM reservation: %s", type(exc).__name__)
+
+    def release(self, reservation: Reservation | None) -> None:
+        """Give back a reservation whose request never reached a provider."""
+        self.reconcile(reservation, 0)
+
+    async def record_rejected(
+        self,
+        *,
+        request_id: str,
+        tenant_id: str,
+        api_key_id: str,
+        started_at: float,
+        model: str,
+        status: UsageStatus,
+    ) -> None:
+        """The usage event of a request turned away before any provider: no tokens."""
+        await self.ledger.record(
+            UsageEvent(
+                request_id=request_id,
+                tenant_id=tenant_id,
+                api_key_id=api_key_id,
+                model=model,
+                provider=None,
+                status=status,
+                prompt_tokens=0,
+                completion_tokens=0,
+                usage_estimated=False,
+                latency_ms=_ms_since(started_at, time.perf_counter()),
+                ttft_ms=None,
+            )
         )
 
     def _opened(self) -> None:
@@ -137,6 +200,7 @@ class UsageMeter:
         # Completion text received so far, for estimating unreported usage.
         self.generated = ""
         self.first_token_at: float | None = None
+        self.reservation: Reservation | None = None  # TPM tokens held, settled on record
         self._measured = False
 
     def mark_sent(self) -> None:
@@ -196,6 +260,8 @@ class UsageMeter:
                 else _ms_since(self.started_at, self.first_token_at),
             )
         )
+        # After the event: the ledger is the record; the bucket only follows it.
+        self._metering.reconcile(self.reservation, prompt + completion)
 
     def _estimate(self) -> tuple[int, int]:
         return (

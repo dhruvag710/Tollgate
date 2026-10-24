@@ -112,8 +112,11 @@ def run_server(app: Any) -> Iterator[str]:
 
 
 @contextmanager
-def run_uvicorn_process(*args: str, env: dict[str, str] | None = None) -> Iterator[str]:
-    """Run `python -m uvicorn <args>` as a separate process, as in deployment."""
+def run_uvicorn_process(
+    *args: str, env: dict[str, str] | None = None, host: str = "127.0.0.1"
+) -> Iterator[str]:
+    """Run `python -m uvicorn <args>` as a separate process, as in deployment.
+    It listens on `host`; the URL yielded is always the loopback one."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -124,7 +127,7 @@ def run_uvicorn_process(*args: str, env: dict[str, str] | None = None) -> Iterat
             "uvicorn",
             *args,
             "--host",
-            "127.0.0.1",
+            host,
             "--port",
             str(port),
             "--log-level",

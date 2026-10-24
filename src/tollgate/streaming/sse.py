@@ -133,6 +133,7 @@ class SSEProxyResponse(Response):
         meter: UsageMeter,
         timings: Timings,
         server_timing: bool,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__()
         self._provider = provider
@@ -141,6 +142,7 @@ class SSEProxyResponse(Response):
         self._meter = meter
         self._timings = timings
         self._server_timing = server_timing
+        self._extra_headers = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
         self._tally = StreamTally(forward_usage_chunk=forward_usage_chunk)
         self._upstream: UpstreamStream | None = None
         self._started = False  # http.response.start sent
@@ -272,7 +274,11 @@ class SSEProxyResponse(Response):
             self._responded = True
         if not self._started:
             self._started = True
-            headers = [*SSE_HEADERS, (b"x-tollgate-provider", self._provider.name.encode())]
+            headers = [
+                *SSE_HEADERS,
+                *self._extra_headers,
+                (b"x-tollgate-provider", self._provider.name.encode()),
+            ]
             if self._server_timing:
                 headers.append((b"server-timing", self._timings.server_timing().encode()))
             await send({"type": "http.response.start", "status": 200, "headers": headers})

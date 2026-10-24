@@ -11,6 +11,11 @@ refill is refused if the generation moved while Postgres was being read.
 a lookup knows which generation to read before it goes to Postgres. On the
 very first sight of a key only that is recorded: its data was read before its
 generation was known. A key's first two requests therefore read Postgres.
+
+Given a TPM reservation, the lookup also applies the tenant's rate limits when
+the entry is current, using the limits cached in it: one round trip both
+authenticates and rate limits a request (the limiter's own check runs only
+after a miss).
 """
 
 from dataclasses import dataclass
@@ -19,17 +24,28 @@ from typing import Any, cast
 from redis.asyncio import Redis
 
 from tollgate.auth.context import TenantContext
+from tollgate.ratelimit.limiter import BUCKET_LIBRARY, Decision, decision
 
 ENTRY_TTL_S = 60
 TENANT_OF_TTL_S = 86_400
 
-_LOOKUP = """
+_LOOKUP = (
+    BUCKET_LIBRARY
+    + """
+-- ARGV[1]: TPM tokens to reserve, or '' to authenticate only.
 local tenant = redis.call('GET', KEYS[2])
-if not tenant then return {false, false, {}} end
--- A key named from data, so this needs standalone Redis (not Redis Cluster).
+if not tenant then return {false, false, {}, false} end
+-- Keys named from data, so this needs standalone Redis (not Redis Cluster).
 local gen = redis.call('GET', 'tg:tenant_gen:' .. tenant) or '0'
-return {tenant, gen, redis.call('HGETALL', KEYS[1])}
+local flat = redis.call('HGETALL', KEYS[1])
+if ARGV[1] == '' then return {tenant, gen, flat, false} end
+local entry = {}
+for i = 1, #flat, 2 do entry[flat[i]] = flat[i + 1] end
+if entry.gen ~= gen then return {tenant, gen, flat, false} end
+local rpm, tpm = tonumber(entry.rpm_limit), tonumber(entry.tpm_limit)
+return {tenant, gen, flat, reserve(tenant, rpm, tpm, tonumber(ARGV[1]))}
 """
+)
 
 _FILL = """
 local gen = redis.call('GET', KEYS[2]) or '0'
@@ -58,6 +74,7 @@ class Lookup:
     context: TenantContext | None  # set only if the entry is current
     tenant_id: str | None  # known even when the entry is stale or gone
     generation: str | None  # the tenant's generation at lookup time
+    decision: Decision | None = None  # the rate limits, if asked for and the entry is current
 
 
 class KeyCache:
@@ -66,12 +83,30 @@ class KeyCache:
         self._lookup = redis.register_script(_LOOKUP)
         self._fill = redis.register_script(_FILL)
 
-    async def lookup(self, key_hash: str) -> Lookup:
-        reply = cast(list[Any], await self._lookup(keys=[_entry(key_hash), _tenant_of(key_hash)]))
-        tenant_id, generation, flat = reply
+    async def lookup(self, key_hash: str, *, reservation: int | None = None) -> Lookup:
+        """Authenticate from the cache, and with a `reservation`, also apply the
+        tenant's rate limits, in the same round trip."""
+        reply = cast(
+            list[Any],
+            await self._lookup(
+                keys=[_entry(key_hash), _tenant_of(key_hash)],
+                args=["" if reservation is None else reservation],
+            ),
+        )
+        tenant_id, generation, flat, limits = reply
         fields = dict(zip(flat[::2], flat[1::2], strict=True))
-        current = tenant_id is not None and fields.get("gen") == generation
-        return Lookup(TenantContext.from_fields(fields) if current else None, tenant_id, generation)
+        if tenant_id is None or fields.get("gen") != generation:
+            return Lookup(None, tenant_id, generation)
+        context = TenantContext.from_fields(fields)
+        if limits is None or reservation is None:
+            return Lookup(context, tenant_id, generation)
+        limited = decision(
+            limits,
+            rpm_limit=context.rpm_limit,
+            tpm_limit=context.tpm_limit,
+            reservation=reservation,
+        )
+        return Lookup(context, tenant_id, generation, limited)
 
     async def store(self, context: TenantContext, seen: Lookup) -> bool:
         """Cache `context`, read from Postgres after the lookup `seen`. Returns

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import anyio
 import httpx
 from fastapi import FastAPI
-from redis.asyncio import Redis
+from redis.asyncio import BlockingConnectionPool, Redis
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tollgate.api import health
@@ -23,6 +23,7 @@ from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
 from tollgate.observability.timing import Timings
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
+from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.routing.router import Router
 from tollgate.usage.ledger import Ledger, LogLedger, Metering
 
@@ -88,16 +89,21 @@ def create_app(
         # Both connect lazily: the gateway starts while either is briefly down,
         # and requests fail closed meanwhile (/readyz reports it).
         engine = create_engine(settings)
-        redis = Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_timeout=settings.redis_timeout_s,
-            socket_connect_timeout=settings.redis_timeout_s,
+        redis = Redis(
+            connection_pool=BlockingConnectionPool.from_url(
+                settings.redis_url,
+                max_connections=settings.redis_max_connections,
+                timeout=settings.redis_timeout_s,  # waiting for a free connection
+                decode_responses=True,
+                socket_timeout=settings.redis_timeout_s,
+                socket_connect_timeout=settings.redis_timeout_s,
+            )
         )
         app.state.engine = engine
         app.state.sessions = create_sessionmaker(engine)
         app.state.redis = redis
         app.state.key_cache = KeyCache(redis)
+        app.state.limiter = metering.limiter = RateLimiter(redis)
         try:
             async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
                 app.state.router = Router(ProviderRegistry.from_config(providers_file, client))

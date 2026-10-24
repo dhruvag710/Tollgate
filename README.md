@@ -3,9 +3,9 @@
 A self-hosted, OpenAI-compatible LLM gateway. Point your OpenAI SDK at Tollgate by
 changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** phases 1.1–1.4: passthrough for streaming and non-streaming chat
-completions, the mock provider, and tenants with API keys. Rate limiting and the
-persistent usage ledger come in later phases; until then each request's usage event is
+**Status:** phases 1.1–1.5: passthrough for streaming and non-streaming chat
+completions, the mock provider, tenants with API keys, and per-tenant rate limits. The
+persistent usage ledger comes in a later phase; until then each request's usage event is
 written to the log.
 
 Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
@@ -47,6 +47,20 @@ Tenants and keys can also be managed over the admin API (`Authorization: Bearer
 $ADMIN_TOKEN`): `POST /admin/tenants`, `PATCH /admin/tenants/{id}`,
 `POST /admin/tenants/{id}/keys` and `DELETE /admin/keys/{id}`. A revoked key stops
 working on every replica at once.
+
+Each tenant has a requests-per-minute and a tokens-per-minute limit, both token buckets
+in Redis that refill continuously. A chat request reserves its estimated prompt tokens
+plus its completion cap (`max_completion_tokens`, else `max_tokens`, else
+`TPM_DEFAULT_MAX_TOKENS`, 1024 by default). Once its usage is known, the difference is
+refunded or charged. Responses carry `X-RateLimit-Limit-Requests`,
+`X-RateLimit-Remaining-Requests` and `X-RateLimit-Remaining-Tokens`. A request over a
+limit gets an OpenAI-shaped 429 (`rpm_exceeded` or `tpm_exceeded`) with `Retry-After`
+taken from the bucket. A request whose reservation exceeds the whole TPM limit gets
+`request_too_large`, without `Retry-After`. If Redis is down, requests are refused with
+503 rather than let through.
+
+To run three gateway replicas behind nginx, sharing Postgres and Redis:
+`docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d`.
 
 ```python
 from openai import OpenAI
