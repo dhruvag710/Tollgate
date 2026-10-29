@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +18,11 @@ import httpx
 import pytest
 import uvicorn
 import yaml
+from sqlalchemy import select
 
 from tollgate.config import Settings
 from tollgate.db import tenants
+from tollgate.db.models import UsageEventRow
 from tollgate.db.session import create_engine, create_sessionmaker
 from tollgate.usage.ledger import UsageEvent
 
@@ -132,6 +135,9 @@ def run_uvicorn_process(
             str(port),
             "--log-level",
             "warning",
+            # As the Dockerfile sets it: longer than any client keeps a connection.
+            "--timeout-keep-alive",
+            "75",
         ],
         cwd=ROOT,
         env={**os.environ, **(env or {})},
@@ -184,3 +190,24 @@ def assert_internal_error_response(r: httpx.Response, caplog: pytest.LogCaptureF
     assert request_id in record.getMessage()
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == "bug"
+
+
+async def ledger_rows(tenant_id: Any) -> list[UsageEventRow]:
+    """The tenant's rows in the test database's ledger, oldest first."""
+    engine = create_engine(Settings(providers_config=TEST_PROVIDERS))
+    try:
+        async with create_sessionmaker(engine)() as session:
+            rows = await session.scalars(
+                select(UsageEventRow)
+                .where(UsageEventRow.tenant_id == tenant_id)
+                .order_by(UsageEventRow.id)
+            )
+            return list(rows)
+    finally:
+        await engine.dispose()
+
+
+async def redis_month(redis: Any) -> str:
+    """'YYYYMM' (UTC) by Redis's clock, as the budget scripts see it."""
+    seconds, _ = await redis.time()
+    return datetime.fromtimestamp(seconds, UTC).strftime("%Y%m")

@@ -1,11 +1,12 @@
 """Rate limiting at the endpoint (SPEC Phase 1.5): headers, 429s, TPM
 reservations and their reconciliation, and the single Redis round trip that
-authenticates and rate limits a request whose key is cached."""
+authenticates, budget checks and rate limits a request whose key is cached."""
 
 import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -204,13 +205,20 @@ async def evalsha_calls(redis: Redis) -> int:
     return int(stats.get("cmdstat_evalsha", {}).get("calls", 0))
 
 
-async def test_a_cached_request_costs_one_redis_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("budget", [None, Decimal("100")], ids=["unlimited", "budgeted"])
+async def test_a_cached_request_costs_one_redis_round_trip(
+    monkeypatch: pytest.MonkeyPatch, budget: Decimal | None
+) -> None:
     observer = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    tenant = {"rpm_limit": 100, "tpm_limit": 100_000, "monthly_budget_usd": budget}
     try:
-        async with tenant_gateway(rpm_limit=100, tpm_limit=100_000) as (app, client, _):
+        async with tenant_gateway(**tenant) as (app, client, _):
             # A key's first two sightings read Postgres and fill the cache.
             for _ in range(2):
                 assert (await client.get("/v1/models")).status_code == 200
+            if budget is not None:
+                # The month's first request refills its spend counter from the ledger.
+                assert (await client.post("/v1/chat/completions", json=chat(10))).status_code == 200
             await app.state.metering.wait_idle()
 
             def no_second_call(*args: Any, **kwargs: Any) -> None:
@@ -226,11 +234,12 @@ async def test_a_cached_request_costs_one_redis_round_trip(monkeypatch: pytest.M
             evalsha_after = await evalsha_calls(observer)
     finally:
         await observer.aclose()
-    # One round trip authenticated and rate limited the request; the other,
-    # off the response path, reconciled its reservation. Nothing else.
+    # One round trip authenticated, budget checked and rate limited the
+    # request; the other, off the response path, settled it (its TPM
+    # reservation and its spend). Nothing else.
     assert trips.sent == [
         [("EVALSHA", app.state.key_cache._lookup.sha)],
-        [("EVALSHA", app.state.limiter._reconcile.sha)],
+        [("EVALSHA", app.state.limiter._settle.sha)],
     ]
     assert evalsha_after - evalsha_before == 2  # and Redis saw just those two
 

@@ -10,6 +10,7 @@ from tollgate.auth.cache import KeyCache
 from tollgate.config import Settings
 from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.routing.router import Router
+from tollgate.usage.budget import Budgets
 from tollgate.usage.ledger import Metering
 
 
@@ -41,3 +42,8 @@ async def get_key_cache(request: Request) -> KeyCache:
 async def get_limiter(request: Request) -> RateLimiter:
     limiter: RateLimiter = request.app.state.limiter
     return limiter
+
+
+async def get_budgets(request: Request) -> Budgets:
+    budgets: Budgets = request.app.state.budgets
+    return budgets

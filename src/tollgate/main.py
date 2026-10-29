@@ -25,7 +25,9 @@ from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.redis_pool import create_redis, open_connections
 from tollgate.routing.router import Router
-from tollgate.usage.ledger import Ledger, LogLedger, Metering
+from tollgate.usage.budget import Budgets
+from tollgate.usage.ledger import Ledger, Metering, UsageWriter, postgres_writer
+from tollgate.usage.pricing import Pricing
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +69,8 @@ def create_app(
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     ledger: Ledger | None = None,
 ) -> FastAPI:
-    """Build the gateway. `upstream_transport` lets tests run providers in-process."""
+    """Build the gateway. `upstream_transport` lets tests run providers in-process;
+    `ledger` replaces the Postgres ledger."""
     settings = settings or Settings()
     logging.basicConfig(level=settings.log_level)
     if settings.uses_development_secrets:
@@ -76,7 +79,13 @@ def create_app(
             "Anyone can read these; never use them outside local development."
         )
     providers_file = load_providers_file(settings.providers_config)
-    metering = Metering(ledger or LogLedger())
+    # The Postgres ledger's writer starts with the lifespan; events wait in its queue.
+    writer: UsageWriter | None = None
+    if ledger is None:
+        ledger = writer = UsageWriter(
+            batch_size=settings.ledger_batch_size, interval_s=settings.ledger_flush_interval_s
+        )
+    metering = Metering(ledger, Pricing.from_config(providers_file))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -95,6 +104,9 @@ def create_app(
         app.state.redis = redis
         app.state.key_cache = KeyCache(redis)
         app.state.limiter = metering.limiter = RateLimiter(redis)
+        app.state.budgets = Budgets(redis, app.state.sessions)
+        if writer is not None:
+            writer.start(postgres_writer(app.state.sessions))
         try:
             # Before serving, so a cold gateway can take a burst (best effort).
             await open_connections(
@@ -106,6 +118,9 @@ def create_app(
                 with anyio.move_on_after(USAGE_RECORD_TIMEOUT_S):
                     await metering.wait_idle()
         finally:
+            # After every request has recorded its event: shutdown flushes them all.
+            if writer is not None:
+                await writer.close(settings.ledger_shutdown_timeout_s)
             await redis.aclose()
             await engine.dispose()
 

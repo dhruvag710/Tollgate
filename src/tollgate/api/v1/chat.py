@@ -14,6 +14,7 @@ from tollgate.auth.cache import KeyCache
 from tollgate.auth.dependency import authenticate, presented_key
 from tollgate.config import Settings
 from tollgate.deps import (
+    get_budgets,
     get_key_cache,
     get_limiter,
     get_metering,
@@ -28,6 +29,7 @@ from tollgate.ratelimit.estimate import generated_text, reservation_tokens
 from tollgate.ratelimit.limiter import RateLimiter, Reservation
 from tollgate.routing.router import Router, model_not_found
 from tollgate.streaming.sse import SSEProxyResponse
+from tollgate.usage.budget import Budgets
 from tollgate.usage.ledger import Metering, UsageMeter, parse_usage
 
 router = APIRouter()
@@ -89,6 +91,7 @@ async def chat_completions(
     sessions: Annotated[async_sessionmaker[AsyncSession], Depends(get_sessions)],
     cache: Annotated[KeyCache, Depends(get_key_cache)],
     limiter: Annotated[RateLimiter, Depends(get_limiter)],
+    budgets: Annotated[Budgets, Depends(get_budgets)],
 ) -> Response:
     # Before the body is read: a missing or malformed key costs nothing.
     raw_key = presented_key(request)
@@ -107,8 +110,8 @@ async def chat_completions(
                 "invalid_request",
             ) from exc
 
-    # The reservation must be known before the one Redis call that authenticates
-    # and rate limits, so the body is read first.
+    # The reservation must be known before the one Redis call that authenticates,
+    # budget checks and rate limits, so the body is read first.
     with timings.stage("estimate"):
         estimate = partial(
             reservation_tokens,
@@ -122,7 +125,14 @@ async def chat_completions(
         else:
             reserve = await anyio.to_thread.run_sync(estimate)
     tenant, limits = await authenticate(
-        request, raw_key, settings, sessions, cache, limiter, reservation=reserve
+        request,
+        raw_key,
+        settings,
+        sessions,
+        cache,
+        limiter,
+        budgets=budgets,
+        reservation=reserve,
     )
     assert limits is not None  # asked for with a reservation
     if not limits.allowed:
@@ -132,7 +142,7 @@ async def chat_completions(
             api_key_id=tenant.api_key_id,
             started_at=request.state.started_at,
             model=req.model,
-            status="rate_limited",
+            status="budget_exceeded" if limits.outcome == "budget" else "rate_limited",
         )
         raise limits.error()
 

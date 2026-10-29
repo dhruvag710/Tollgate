@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     redis_pool_timeout_s: float = 5.0
     # TPM tokens reserved for the completion of a request that sets no max_tokens.
     tpm_default_max_tokens: int = 1024
+    # The usage ledger's writer: a batch insert every interval or batch size,
+    # whichever comes first, and how long shutdown waits for the last ones.
+    ledger_batch_size: int = Field(default=200, ge=1)
+    ledger_flush_interval_s: float = Field(default=0.5, gt=0)
+    ledger_shutdown_timeout_s: float = 10.0
     # HMAC key for stored API key hashes. Changing it invalidates every key.
     key_pepper: SecretStr = Field(min_length=16)
     # The admin API is disabled unless this is set.

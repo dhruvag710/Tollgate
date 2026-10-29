@@ -1,6 +1,6 @@
 """Resolves a request's API key to its TenantContext (request lifecycle step 2),
-applying the tenant's rate limits in the same Redis call when asked (step 4),
-and guards the admin API."""
+admitting the request by its tenant's budget and rate limits in the same Redis
+call when asked (steps 3 and 4), and guards the admin API."""
 
 import hmac
 import logging
@@ -19,8 +19,17 @@ from tollgate.db import tenants
 from tollgate.deps import get_key_cache, get_limiter, get_sessions, get_settings
 from tollgate.errors import TollgateError
 from tollgate.ratelimit.limiter import Decision, RateLimiter
+from tollgate.usage.budget import Budgets
 
 log = logging.getLogger(__name__)
+
+# Refills of a missing spend counter per request: one, plus one more if the
+# month rolled over in between.
+MAX_SPEND_REFILLS = 2
+
+
+class SpendUnknown(Exception):
+    """The month's spend counter vanished again after being refilled."""
 
 
 def _bearer_token(header: str | None) -> str | None:
@@ -73,12 +82,17 @@ async def authenticate(
     cache: KeyCache,
     limiter: RateLimiter,
     *,
+    budgets: Budgets | None = None,
     reservation: int | None = None,
 ) -> tuple[TenantContext, Decision | None]:
-    """The key's tenant, and with a TPM `reservation` the rate-limit decision: from
-    the same Redis call when the key is cached, one more call after a miss."""
+    """The key's tenant, and with a TPM `reservation` (and `budgets`) the
+    admission decision: from the same Redis call when the key is cached, one
+    more call after a miss, and a refill when the month's spend counter is
+    missing."""
     with request.state.timings.stage("auth"):
-        return await _authenticate(raw_key, settings, sessions, cache, limiter, reservation)
+        return await _authenticate(
+            raw_key, settings, sessions, cache, limiter, budgets, reservation
+        )
 
 
 async def _authenticate(
@@ -87,12 +101,16 @@ async def _authenticate(
     sessions: async_sessionmaker[AsyncSession],
     cache: KeyCache,
     limiter: RateLimiter,
+    budgets: Budgets | None,
     reservation: int | None,
 ) -> tuple[TenantContext, Decision | None]:
     key_hash = keys.hash_key(raw_key, settings.key_pepper.get_secret_value())
     try:
         context, limits = await _resolve(key_hash, sessions, cache, limiter, reservation)
-    except (RedisError, SQLAlchemyError, OSError, TimeoutError) as exc:
+        if context is not None and reservation is not None:
+            assert budgets is not None, "admitting a request needs budgets"
+            limits = await _admit(context, limits, limiter, budgets, reservation)
+    except (RedisError, SQLAlchemyError, OSError, TimeoutError, SpendUnknown) as exc:
         # Fail closed: without Redis or Postgres no key can be checked.
         log.warning("auth backend unavailable: %s", type(exc).__name__)
         raise TollgateError(
@@ -121,15 +139,33 @@ async def _resolve(
     if context is None:
         return None, None
     await cache.store(context, seen)
-    if reservation is None:
-        return context, None
-    limits = await limiter.check(
-        context.tenant_id,
-        rpm_limit=context.rpm_limit,
-        tpm_limit=context.tpm_limit,
-        reservation=reservation,
-    )
-    return context, limits
+    return context, None
+
+
+async def _admit(
+    context: TenantContext,
+    limits: Decision | None,
+    limiter: RateLimiter,
+    budgets: Budgets,
+    reservation: int,
+) -> Decision:
+    """`limits` from the cached lookup, or the limiter's own check after a miss;
+    a missing spend counter is refilled from the ledger and the check repeated."""
+    refills = 0
+    while limits is None or limits.outcome == "spend_unknown":
+        if limits is not None:
+            if refills == MAX_SPEND_REFILLS:
+                raise SpendUnknown
+            await budgets.refill(context.tenant_id, limits.month)
+            refills += 1
+        limits = await limiter.check(
+            context.tenant_id,
+            budget_usd=context.monthly_budget_usd,
+            rpm_limit=context.rpm_limit,
+            tpm_limit=context.tpm_limit,
+            reservation=reservation,
+        )
+    return limits
 
 
 async def require_admin(

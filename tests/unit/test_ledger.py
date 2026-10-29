@@ -1,12 +1,14 @@
 import asyncio
-import json
 import time
+from decimal import Decimal
 
 import pytest
 
 from tests.helpers import MemoryLedger
+from tollgate.config import Price
 from tollgate.ratelimit.estimate import estimate_prompt_tokens
-from tollgate.usage.ledger import LogLedger, Metering, UsageEvent, UsageMeter, parse_usage
+from tollgate.usage.ledger import Metering, UsageEvent, UsageMeter, parse_usage
+from tollgate.usage.pricing import Pricing
 
 MESSAGES = [{"role": "user", "content": "a secret prompt"}]
 
@@ -221,11 +223,22 @@ async def test_wait_idle_waits_for_every_open_meter() -> None:
     assert [e.request_id for e in ledger.events] == ["r1", "r2"]
 
 
-async def test_log_ledger_logs_event_without_prompt(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level("INFO")
-    event = UsageEvent("r1", "t1", "k1", "gpt-4o-mini", "mock", "success", 1, 2, False, 30, 10)
-    await LogLedger().record(event)
-    logged = json.loads(caplog.records[0].getMessage().removeprefix("usage_event "))
-    assert (logged["request_id"], logged["tenant_id"], logged["api_key_id"]) == ("r1", "t1", "k1")
-    assert logged["completion_tokens"] == 2
-    assert "secret" not in caplog.text
+async def test_events_carry_their_cost() -> None:
+    ledger = MemoryLedger()
+    metering = Metering(
+        ledger, Pricing({"gpt-4o-mini": Price(input=Decimal("0.15"), output=Decimal("0.60"))})
+    )
+    meter = metering.meter(
+        request_id="r1",
+        tenant_id="t1",
+        api_key_id="k1",
+        started_at=time.perf_counter(),
+        model="gpt-4o-mini",
+        provider="mock",
+        messages=MESSAGES,
+    )
+    async with meter.measure():
+        meter.reported = (1_000, 2_000)
+        meter.settle("success")
+    (event,) = ledger.events
+    assert event.cost_usd == Decimal("0.001350")  # 1000 x 0.15/1M + 2000 x 0.60/1M

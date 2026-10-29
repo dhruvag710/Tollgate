@@ -3,10 +3,9 @@
 A self-hosted, OpenAI-compatible LLM gateway. Point your OpenAI SDK at Tollgate by
 changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** phases 1.1–1.5: passthrough for streaming and non-streaming chat
-completions, the mock provider, tenants with API keys, and per-tenant rate limits. The
-persistent usage ledger comes in a later phase; until then each request's usage event is
-written to the log.
+**Status:** phases 1.1–1.6: passthrough for streaming and non-streaming chat
+completions, the mock provider, tenants with API keys, per-tenant rate limits, and a
+usage ledger in Postgres with monthly budgets.
 
 Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
 always asks the provider for the final usage chunk, but only forwards it if the client
@@ -60,6 +59,14 @@ taken from the bucket. A request whose reservation exceeds the whole TPM limit g
 503 rather than let through. Each gateway opens its Redis connections at startup
 (`REDIS_MIN_CONNECTIONS`, the whole pool by default), so a freshly started gateway can
 take a burst; it still starts if Redis is down.
+
+Every request's usage, with its cost from the prices in the providers config, is a row
+in the `usage_events` table, written in batches every 500 ms or 200 events; shutdown
+writes whatever is still queued. A tenant with a `monthly_budget_usd` is admitted while
+its month-to-date spend (UTC) is below it, and refused with an OpenAI-shaped 402
+(`budget_exceeded`) once it isn't. Requests already in flight when the budget is crossed
+still finish, so spend can overshoot by their cost. Raising the budget takes effect at
+once.
 
 To run three gateway replicas behind nginx, sharing Postgres and Redis:
 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d`.

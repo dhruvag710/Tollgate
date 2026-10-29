@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
+from tollgate.ratelimit.limiter import budget_arg
+
 
 @dataclass(frozen=True)
 class TenantContext:
@@ -30,9 +32,8 @@ class TenantContext:
             "key_hash": self.key_hash,
             "rpm_limit": str(self.rpm_limit),
             "tpm_limit": str(self.tpm_limit),
-            "monthly_budget_usd": ""
-            if self.monthly_budget_usd is None
-            else str(self.monthly_budget_usd),
+            # Plain digits ('12.3456', never '1E+1'): the admission script reads them.
+            "monthly_budget_usd": budget_arg(self.monthly_budget_usd),
             "allowed_models": json.dumps(
                 None if self.allowed_models is None else list(self.allowed_models)
             ),
