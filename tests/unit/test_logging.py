@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 
 from tollgate.observability.logging import (
@@ -58,11 +59,15 @@ def test_the_access_log_drops_query_strings() -> None:
 
 
 def test_configuring_twice_installs_one_handler_and_routes_uvicorn_through_it() -> None:
-    configure_logging("INFO")
-    configure_logging("DEBUG")
-    ours = [h for h in logging.getLogger().handlers if isinstance(h.formatter, JsonFormatter)]
-    assert len(ours) == 1
-    assert ours[0].level == logging.DEBUG
-    for name in UVICORN_LOGGERS:
-        logger = logging.getLogger(name)
-        assert (logger.handlers, logger.propagate, logger.level) == ([], True, logging.NOTSET)
+    try:
+        configure_logging("INFO")
+        configure_logging("DEBUG")
+        ours = [h for h in logging.getLogger().handlers if isinstance(h.formatter, JsonFormatter)]
+        assert len(ours) == 1
+        assert ours[0].level == logging.DEBUG
+        for name in UVICORN_LOGGERS:
+            logger = logging.getLogger(name)
+            assert (logger.handlers, logger.propagate, logger.level) == ([], True, logging.NOTSET)
+    finally:
+        # Back to the suite's level, not DEBUG for every test that follows.
+        configure_logging(os.environ.get("LOG_LEVEL", "WARNING"))

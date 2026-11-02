@@ -31,6 +31,12 @@ from tests.helpers import (
 from tollgate.config import Settings
 from tollgate.main import create_app
 
+# Gateways the tests start (in-process or not) log at WARNING unless LOG_LEVEL
+# says otherwise. At INFO every request adds access-log and HTTP client lines,
+# and a failing test's captured output buries its failure: one C4 failure
+# printed ~60,000 lines.
+os.environ.setdefault("LOG_LEVEL", "WARNING")
+
 
 @pytest.fixture(scope="session")
 def backing_services() -> Iterator[None]:

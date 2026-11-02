@@ -30,6 +30,7 @@ from testcontainers.core.container import DockerContainer
 
 from tests.concurrency.burst import Reply, burst, redis_now
 from tests.helpers import (
+    HTTP_TIMEOUT,
     ROOT,
     MemoryLedger,
     issue_key,
@@ -106,7 +107,7 @@ async def test_c1_atomic_checks_admit_exactly_the_rpm_limit(tmp_path: Path) -> N
             "--factory", "tests.concurrency.barrier_app:create_app", env=env
         ) as url:
             replies, _ = await burst(url, issued.raw_key, BURST, chat())
-            async with httpx.AsyncClient(base_url=url) as client:
+            async with httpx.AsyncClient(base_url=url, timeout=HTTP_TIMEOUT) as client:
                 checks_s = (await client.get("/barrier")).json()["checks_s"]
     assert len(replies) == BURST
     assert admitted(replies) == RPM, f"the checks took {checks_s:.3f}s"

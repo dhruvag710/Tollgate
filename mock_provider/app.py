@@ -34,6 +34,7 @@ nothing is billed for them. Run with ONE worker, or stats are per-process.
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import random
 import secrets
@@ -190,6 +191,19 @@ class MockDrop(Exception):
     """Raised inside a response body to sever the connection mid-response."""
 
 
+def _not_a_requested_drop(record: logging.LogRecord) -> bool:
+    """uvicorn logs every exception that escapes a response as an error, with
+    its traceback. A drop the request asked for (X-Mock-Fail-Mode) is the mock
+    doing its job, and a load test asks for hundreds: they stay out of the log."""
+    return not _is_drop(record.exc_info[1] if record.exc_info else None)
+
+
+def _is_drop(exc: BaseException | None) -> bool:
+    if isinstance(exc, BaseExceptionGroup):
+        return all(_is_drop(e) for e in exc.exceptions)
+    return isinstance(exc, MockDrop)
+
+
 def _error(
     status: int,
     message: str,
@@ -223,6 +237,7 @@ def _sse(obj: Any) -> bytes:
 
 
 def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
+    logging.getLogger("uvicorn.error").addFilter(_not_a_requested_drop)
     defaults = Behaviour().with_overrides(env, Behaviour.env_name)
     env_seed = _parse_seed(env["MOCK_SEED"]) if env.get("MOCK_SEED") else None
     hang_s = float(env.get("MOCK_HANG_S", "600"))

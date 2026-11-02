@@ -27,6 +27,7 @@ from mock_provider.app import count_prompt_tokens
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
     AUTH,
+    HTTP_TIMEOUT,
     TEST_KEY,
     MemoryLedger,
     assert_internal_error_response,
@@ -443,7 +444,7 @@ def test_sync_sdk_streams_over_sockets(tmp_path: Path) -> None:
         run_server(create_mock_app(env={})) as mock_url,
         gateway_server(tmp_path, mock_url) as (url, ledger),
     ):
-        client = openai.OpenAI(base_url=f"{url}/v1", api_key=TEST_KEY)
+        client = openai.OpenAI(base_url=f"{url}/v1", api_key=TEST_KEY, timeout=HTTP_TIMEOUT)
         stream = client.chat.completions.create(
             model=MODEL, messages=MESSAGES, stream=True, extra_headers={"X-Mock-Output-Tokens": "6"}
         )
@@ -458,7 +459,8 @@ def test_chunks_are_forwarded_as_they_arrive(tmp_path: Path) -> None:
     with (
         run_server(create_mock_app(env={})) as mock_url,
         gateway_server(tmp_path, mock_url) as (url, _),
-        httpx.Client() as client,  # created first: building one takes ~200 ms on Windows
+        # Created first: building a client takes ~200 ms on Windows.
+        httpx.Client(timeout=HTTP_TIMEOUT) as client,
     ):
         start = time.perf_counter()
         arrivals = []
@@ -487,7 +489,7 @@ def test_client_disconnect_cancels_upstream_request(tmp_path: Path) -> None:
     ):
 
         def mock_stats() -> dict[str, Any]:
-            stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats").json()
+            stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
             return stats
 
         # Seeded, so this is exactly the text the stream below will carry.
@@ -496,11 +498,12 @@ def test_client_disconnect_cancels_upstream_request(tmp_path: Path) -> None:
                 f"{mock_url}/v1/chat/completions",
                 json={**body, "stream": False},
                 headers=long_reply,
+                timeout=HTTP_TIMEOUT,
             )
             .json()["choices"][0]["message"]["content"]
             .split()
         )
-        httpx.post(f"{mock_url}/mock/stats/reset")
+        httpx.post(f"{mock_url}/mock/stats/reset", timeout=HTTP_TIMEOUT)
 
         received = []
         # 1000 tokens at 20/s: the upstream would run for 50 s if nobody cancelled it.
@@ -509,6 +512,7 @@ def test_client_disconnect_cancels_upstream_request(tmp_path: Path) -> None:
             f"{url}/v1/chat/completions",
             json=body,
             headers={**AUTH, **long_reply, "X-Mock-Tokens-Per-Sec": "20"},
+            timeout=HTTP_TIMEOUT,
         ) as r:
             for line in r.iter_lines():
                 if _is_token_line(line):
@@ -551,7 +555,12 @@ def test_disconnect_before_first_token_cancels_upstream_request(tmp_path: Path) 
                 timeout=httpx.Timeout(10, read=0.5),
             )
         assert wait_until(
-            lambda: httpx.get(f"{mock_url}/mock/stats").json()["streams_cancelled"] == 1,
+            lambda: (
+                httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()[
+                    "streams_cancelled"
+                ]
+                == 1
+            ),
             timeout=5,
         )
         assert wait_until(lambda: len(ledger.events) == 1)
@@ -566,7 +575,9 @@ def test_upstream_drop_mid_stream_ends_with_error_event(tmp_path: Path) -> None:
         run_server(create_mock_app(env={})) as mock_url,
         gateway_server(tmp_path, mock_url) as (url, ledger),
     ):
-        client = openai.OpenAI(base_url=f"{url}/v1", api_key=TEST_KEY, max_retries=0)
+        client = openai.OpenAI(
+            base_url=f"{url}/v1", api_key=TEST_KEY, max_retries=0, timeout=HTTP_TIMEOUT
+        )
         stream = client.chat.completions.create(
             model=MODEL,
             messages=MESSAGES,
@@ -603,6 +614,7 @@ def test_gateway_shutdown_mid_stream_is_recorded(tmp_path: Path) -> None:
                 f"{url}/v1/chat/completions",
                 json=STREAM_BODY,
                 headers={**AUTH, "X-Mock-Tokens-Per-Sec": "20", "X-Mock-Output-Tokens": "1000"},
+                timeout=HTTP_TIMEOUT,
             ) as r,
         ):
             lines = r.iter_lines()
@@ -618,9 +630,14 @@ def test_gateway_shutdown_mid_stream_is_recorded(tmp_path: Path) -> None:
         assert "data: [DONE]" not in rest
         assert json.loads(rest[-1].removeprefix("data: ")) == SHUTDOWN_ERROR
         assert wait_until(
-            lambda: httpx.get(f"{mock_url}/mock/stats").json()["streams_cancelled"] == 1
+            lambda: (
+                httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()[
+                    "streams_cancelled"
+                ]
+                == 1
+            )
         )
-        stats = httpx.get(f"{mock_url}/mock/stats").json()
+        stats = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     (event,) = ledger.events
     assert event.status == "gateway_shutdown"
     assert event.usage_estimated
@@ -646,9 +663,14 @@ def test_gateway_shutdown_before_first_event_is_a_503(tmp_path: Path) -> None:
                 f"{url}/v1/chat/completions",
                 json=STREAM_BODY,
                 headers={**AUTH, "X-Mock-TTFT-Ms": "30000"},
-                timeout=30,
+                timeout=HTTP_TIMEOUT,
             )
-            assert wait_until(lambda: httpx.get(f"{mock_url}/mock/stats").json()["requests"] == 1)
+            assert wait_until(
+                lambda: (
+                    httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()["requests"]
+                    == 1
+                )
+            )
             server.should_exit = True
             r = reply.result(timeout=10)
     assert r.status_code == 503
@@ -686,7 +708,7 @@ def test_ttft_overhead_within_budget(tmp_path: Path) -> None:
         env = {"PROVIDERS_CONFIG": str(config), "LOG_LEVEL": "WARNING", "SERVER_TIMING": "true"}
         with (
             run_uvicorn_process("--factory", "tollgate.main:create_app", env=env) as gw_url,
-            httpx.Client(timeout=10) as client,
+            httpx.Client(timeout=HTTP_TIMEOUT) as client,
         ):
             stages: dict[str, list[float]] = {}
 

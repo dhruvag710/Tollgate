@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
     AUTH,
+    HTTP_TIMEOUT,
     TEST_KEY,
     TEST_PROVIDERS,
     MemoryLedger,
@@ -40,7 +41,7 @@ def test_sync_sdk_with_only_base_url_changed(tmp_path: Path) -> None:
     with run_server(create_mock_app(env={})) as mock_url:
         config = write_providers(tmp_path, f"{mock_url}/v1")
         with run_server(create_app(Settings(providers_config=config))) as gw_url:
-            client = openai.OpenAI(base_url=f"{gw_url}/v1", api_key=TEST_KEY)
+            client = openai.OpenAI(base_url=f"{gw_url}/v1", api_key=TEST_KEY, timeout=HTTP_TIMEOUT)
             resp = client.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES)
             models = client.models.list()
 
@@ -390,5 +391,5 @@ def test_shutdown_after_the_request_is_sent_estimates_the_prompt(tmp_path: Path)
 
 
 def _mock_stats(mock_url: str) -> dict[str, Any]:
-    stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats").json()
+    stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     return stats

@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
+    HTTP_TIMEOUT,
     TEST_PEPPER,
     TEST_PROVIDERS,
     MemoryLedger,
@@ -92,7 +93,7 @@ def test_logs_are_json_with_request_ids_and_hold_no_prompt_or_key(tmp_path: Path
             run_uvicorn_process(
                 "--factory", "tollgate.main:create_app", env=env, output=output
             ) as url,
-            httpx.Client(base_url=url, timeout=10) as client,
+            httpx.Client(base_url=url, timeout=HTTP_TIMEOUT) as client,
         ):
 
             def chat(key: str | None, body: Any = None, **headers: str) -> httpx.Response:

@@ -14,6 +14,7 @@ import httpx
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
     AUTH,
+    HTTP_TIMEOUT,
     MemoryLedger,
     in_flight_bound,
     run_server,
@@ -55,7 +56,7 @@ def test_ledger_totals_match_mock_counters_exactly(tmp_path: Path) -> None:
                     f"{url}/v1/chat/completions",
                     json={"model": "gpt-4o-mini", "messages": messages, "stream": stream},
                     headers={**AUTH, "X-Mock-Output-Tokens": "10", **headers},
-                    timeout=10,
+                    timeout=HTTP_TIMEOUT,
                 )
                 assert r.status_code == status, (i, r.text)
 
@@ -87,7 +88,7 @@ def test_disconnects_fall_short_by_at_most_the_tokens_in_flight(tmp_path: Path) 
     with run_server(create_mock_app(env={})) as mock_url:
         config = write_providers(tmp_path, f"{mock_url}/v1")
         app = create_app(Settings(providers_config=config), ledger=ledger)
-        with run_server(app) as url, httpx.Client(timeout=10) as client:
+        with run_server(app) as url, httpx.Client(timeout=HTTP_TIMEOUT) as client:
             for i, k in enumerate(reads):
                 messages = [{"role": "user", "content": "how many tokens " * (i + 1)}]
                 with client.stream(
@@ -126,5 +127,5 @@ def test_disconnects_fall_short_by_at_most_the_tokens_in_flight(tmp_path: Path) 
 
 
 def _mock_stats(mock_url: str) -> dict[str, Any]:
-    stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats").json()
+    stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     return stats

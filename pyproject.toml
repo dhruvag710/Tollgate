@@ -40,6 +40,9 @@ packages = ["src/tollgate"]
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
+# A closing summary naming every test that failed, errored or was skipped, so
+# no amount of captured output above can hide which one it was.
+addopts = "-ra"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [

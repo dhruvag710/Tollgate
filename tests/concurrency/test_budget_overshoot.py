@@ -10,7 +10,14 @@ import httpx
 from redis.asyncio import Redis
 
 from mock_provider.app import create_app as create_mock_app
-from tests.helpers import TEST_PROVIDERS, MemoryLedger, issue_key, redis_month, run_server
+from tests.helpers import (
+    HTTP_TIMEOUT,
+    TEST_PROVIDERS,
+    MemoryLedger,
+    issue_key,
+    redis_month,
+    run_server,
+)
 from tollgate.config import Settings, load_providers_file
 from tollgate.main import create_app
 from tollgate.ratelimit.estimate import estimate_prompt_tokens
@@ -46,7 +53,9 @@ async def test_concurrent_spend_overshoots_by_at_most_what_is_in_flight() -> Non
     key = spend_key(str(issued.key.tenant_id), await redis_month(redis))
     try:
         with run_server(app) as url:
-            async with httpx.AsyncClient(base_url=url, headers=headers, timeout=10) as client:
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=HTTP_TIMEOUT
+            ) as client:
 
                 async def worker() -> None:
                     nonlocal admitted

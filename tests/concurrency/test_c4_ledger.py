@@ -20,6 +20,7 @@ import yaml
 from redis.asyncio import Redis
 
 from tests.helpers import (
+    HTTP_TIMEOUT,
     in_flight_bound,
     issue_key,
     ledger_rows,
@@ -32,7 +33,12 @@ from tollgate.usage.pricing import micro_usd
 N = 10_000
 CONCURRENCY = 64
 EXACT, DISCONNECTED = "gpt-4o-mini", "llama3.1:8b"
-DISCONNECT_TOKENS_PER_SEC = 100
+# The disconnecting clients ask for long, slow streams: 1000 tokens at 20 a
+# second, 50 s if nobody hung up. They hang up three tokens in (~0.1 s), so
+# the hang-up lands mid-stream however slowly a loaded machine runs this
+# client. (A stream that finished first would rightly be a success, and the
+# exact count of client_disconnect rows below would be off.)
+DISCONNECT_TOKENS, DISCONNECT_TOKENS_PER_SEC = 1000, 20
 FAIL, MODE = "X-Mock-Fail-Rate", "X-Mock-Fail-Mode"
 
 # Per 100 requests: (count, stream, mock headers, status the ledger records).
@@ -69,7 +75,7 @@ def providers_config(tmp_path: Path, exact_url: str, disconnect_url: str) -> Pat
 
 
 def stats(mock_url: str) -> dict[str, int]:
-    stats: dict[str, int] = httpx.get(f"{mock_url}/mock/stats").json()
+    stats: dict[str, int] = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     return stats
 
 
@@ -92,7 +98,7 @@ async def send(client: httpx.AsyncClient, i: int) -> None:
     # A client that hangs up mid-stream, three tokens in.
     body = {"model": DISCONNECTED, "messages": messages, "stream": True}
     headers = {
-        "X-Mock-Output-Tokens": "50",
+        "X-Mock-Output-Tokens": str(DISCONNECT_TOKENS),
         "X-Mock-Tokens-Per-Sec": str(DISCONNECT_TOKENS_PER_SEC),
     }
     async with client.stream("POST", "/v1/chat/completions", json=body, headers=headers) as r:
@@ -125,7 +131,7 @@ async def test_c4_ledger_totals_equal_the_providers_counters(tmp_path: Path) -> 
             limits = httpx.Limits(max_connections=CONCURRENCY)
             auth = {"Authorization": f"Bearer {issued.raw_key}"}
             async with httpx.AsyncClient(
-                base_url=url, headers=auth, limits=limits, timeout=30
+                base_url=url, headers=auth, limits=limits, timeout=HTTP_TIMEOUT
             ) as client:
                 slots = asyncio.Semaphore(CONCURRENCY)
 

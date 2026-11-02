@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from scripts import create_tenant
-from tests.helpers import TEST_PROVIDERS, run_server
+from tests.helpers import HTTP_TIMEOUT, TEST_PROVIDERS, run_server
 from tollgate.auth import keys
 from tollgate.config import Settings
 from tollgate.main import create_app
@@ -25,7 +25,9 @@ def test_script_issues_a_working_key(capsys: pytest.CaptureFixture[str]) -> None
     assert "not shown again" in err
 
     with run_server(create_app(Settings(providers_config=TEST_PROVIDERS))) as url:
-        r = httpx.get(f"{url}/v1/models", headers={"Authorization": f"Bearer {raw_key}"})
+        r = httpx.get(
+            f"{url}/v1/models", headers={"Authorization": f"Bearer {raw_key}"}, timeout=HTTP_TIMEOUT
+        )
     assert r.status_code == 200
     assert [m["id"] for m in r.json()["data"]] == ["gpt-4o-mini"]
 

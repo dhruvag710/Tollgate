@@ -2,14 +2,23 @@
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 
 import httpx
 import pytest
 
-from mock_provider.app import VOCAB, Behaviour, count_prompt_tokens, count_tokens, create_app
-from tests.helpers import run_server, wait_until
+from mock_provider.app import (
+    VOCAB,
+    Behaviour,
+    MockDrop,
+    _not_a_requested_drop,
+    count_prompt_tokens,
+    count_tokens,
+    create_app,
+)
+from tests.helpers import HTTP_TIMEOUT, run_server, wait_until
 from tollgate.ratelimit.estimate import estimate_prompt_tokens
 
 MESSAGES = [{"role": "user", "content": "What is a token bucket?"}]
@@ -281,6 +290,7 @@ def test_latency_knob() -> None:
             f"{url}/v1/chat/completions",
             json={"model": "m", "messages": MESSAGES},
             headers={"X-Mock-Latency-Ms": "150"},
+            timeout=HTTP_TIMEOUT,
         )
         assert time.perf_counter() - start >= 0.15
 
@@ -298,6 +308,7 @@ def test_ttft_and_pacing_over_socket() -> None:
                 "X-Mock-Tokens-Per-Sec": "20",
                 "X-Mock-Output-Tokens": "5",
             },
+            timeout=HTTP_TIMEOUT,
         ) as r:
             for line in r.iter_lines():
                 if (
@@ -327,11 +338,12 @@ def test_drop_mid_stream_severs_connection() -> None:
                     "X-Mock-Fail-Mode": "drop_mid_stream",
                     "X-Mock-Output-Tokens": "10",
                 },
+                timeout=HTTP_TIMEOUT,
             ) as r,
         ):
             for line in r.iter_lines():
                 received.append(line)
-        stats = httpx.get(f"{url}/mock/stats").json()
+        stats = httpx.get(f"{url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     assert not any("[DONE]" in line for line in received)
     assert stats["failures"]["drop_mid_stream"] == 1
     assert stats["partial_completion_tokens"] == 5
@@ -346,6 +358,7 @@ def test_drop_non_streaming_severs_connection() -> None:
                 f"{url}/v1/chat/completions",
                 json={"model": "m", "messages": MESSAGES},
                 headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "drop_mid_stream"},
+                timeout=HTTP_TIMEOUT,
             )
         stats = _stats(url)
     assert (stats["completed"], stats["prompt_tokens"]) == (0, 0)
@@ -359,13 +372,14 @@ def test_client_disconnect_is_counted_as_cancelled() -> None:
             f"{url}/v1/chat/completions",
             json={"model": "m", "messages": MESSAGES, "stream": True},
             headers={"X-Mock-Tokens-Per-Sec": "20", "X-Mock-Output-Tokens": "100"},
+            timeout=HTTP_TIMEOUT,
         ) as r:
             for i, _ in enumerate(r.iter_lines()):
                 if i >= 3:
                     break
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            stats = httpx.get(f"{url}/mock/stats").json()
+            stats = httpx.get(f"{url}/mock/stats", timeout=HTTP_TIMEOUT).json()
             if stats["streams_cancelled"]:
                 break
             time.sleep(0.05)
@@ -411,9 +425,29 @@ async def test_cancelled_handler_counts_as_partial() -> None:
 
 
 def _stats(url: str) -> dict[str, Any]:
-    stats: dict[str, Any] = httpx.get(f"{url}/mock/stats").json()
+    stats: dict[str, Any] = httpx.get(f"{url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     return stats
 
 
 def _prompt(model: str) -> int:
     return count_prompt_tokens(MESSAGES, model)
+
+
+def test_a_requested_drop_is_not_logged_as_an_error() -> None:
+    create_app(env={})
+    assert _not_a_requested_drop in logging.getLogger("uvicorn.error").filters
+
+    def raised(exc: BaseException) -> logging.LogRecord:
+        message = "Exception in ASGI application\n"
+        exc_info = (type(exc), exc, None)
+        return logging.LogRecord(
+            "uvicorn.error", logging.ERROR, __file__, 1, message, None, exc_info
+        )
+
+    assert not _not_a_requested_drop(raised(MockDrop("drop_mid_stream")))
+    assert not _not_a_requested_drop(raised(ExceptionGroup("g", [MockDrop("a"), MockDrop("b")])))
+    # Anything else escaping a response is still an error worth seeing.
+    assert _not_a_requested_drop(raised(ValueError("bug")))
+    assert _not_a_requested_drop(raised(ExceptionGroup("g", [MockDrop("a"), ValueError("bug")])))
+    started = logging.LogRecord("uvicorn.error", logging.INFO, __file__, 1, "Started", None, None)
+    assert _not_a_requested_drop(started)

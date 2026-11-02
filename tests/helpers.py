@@ -29,6 +29,13 @@ from tollgate.usage.ledger import UsageEvent
 ROOT = Path(__file__).resolve().parent.parent
 TEST_PROVIDERS = ROOT / "config" / "providers.test.yaml"
 
+# How long any HTTP call a test makes over a real socket may take. Well past
+# httpx's 5 s default: a loaded machine (coverage, the whole suite, Docker
+# Desktop) mustn't fail a test by being slow, while a hung server still fails
+# it rather than stalling the run. Tests that time out on purpose set their
+# own; the in-process ASGI transport ignores timeouts altogether.
+HTTP_TIMEOUT = httpx.Timeout(60.0)
+
 # Exported as KEY_PEPPER and ADMIN_TOKEN by tests/integration/conftest.py.
 TEST_PEPPER = "integration-suite-pepper-not-a-secret"
 TEST_ADMIN_TOKEN = "integration-suite-admin-token"

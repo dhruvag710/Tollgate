@@ -13,6 +13,8 @@ import h11
 import httpx
 from redis.asyncio import Redis
 
+from tests.helpers import HTTP_TIMEOUT
+
 
 async def redis_now(redis: Redis) -> float:
     seconds, micros = await redis.time()
@@ -75,7 +77,7 @@ async def burst(
     key is cached first (a key's first two sightings read Postgres); nothing
     else is warmed up."""
     auth = {"Authorization": f"Bearer {key}"}
-    async with httpx.AsyncClient(base_url=url, timeout=10) as client:
+    async with httpx.AsyncClient(base_url=url, timeout=HTTP_TIMEOUT) as client:
         for _ in range(2):
             assert (await client.get("/v1/models", headers=auth)).status_code == 200
     request = _chat_request(url, {**auth, **(headers or {})}, json.dumps(body).encode())
