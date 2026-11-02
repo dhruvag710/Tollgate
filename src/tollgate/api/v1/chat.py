@@ -18,11 +18,13 @@ from tollgate.deps import (
     get_key_cache,
     get_limiter,
     get_metering,
+    get_metrics,
     get_router,
     get_sessions,
     get_settings,
 )
 from tollgate.errors import TollgateError, upstream_error_response
+from tollgate.observability.metrics import Metrics, Observation
 from tollgate.observability.timing import Timings
 from tollgate.providers.base import Provider
 from tollgate.ratelimit.estimate import generated_text, reservation_tokens
@@ -92,6 +94,7 @@ async def chat_completions(
     cache: Annotated[KeyCache, Depends(get_key_cache)],
     limiter: Annotated[RateLimiter, Depends(get_limiter)],
     budgets: Annotated[Budgets, Depends(get_budgets)],
+    metrics: Annotated[Metrics, Depends(get_metrics)],
 ) -> Response:
     # Before the body is read: a missing or malformed key costs nothing.
     raw_key = presented_key(request)
@@ -110,6 +113,8 @@ async def chat_completions(
                 "invalid_request",
             ) from exc
 
+    observation: Observation = request.state.observation
+    observation.model = req.model
     # The reservation must be known before the one Redis call that authenticates,
     # budget checks and rate limits, so the body is read first.
     with timings.stage("estimate"):
@@ -136,6 +141,8 @@ async def chat_completions(
     )
     assert limits is not None  # asked for with a reservation
     if not limits.allowed:
+        if limits.outcome != "budget":
+            metrics.rate_limited(limits.outcome)
         await metering.record_rejected(
             request_id=request.state.request_id,
             tenant_id=tenant.tenant_id,
@@ -143,6 +150,7 @@ async def chat_completions(
             started_at=request.state.started_at,
             model=req.model,
             status="budget_exceeded" if limits.outcome == "budget" else "rate_limited",
+            observation=observation,
         )
         raise limits.error()
 
@@ -154,6 +162,7 @@ async def chat_completions(
     except TollgateError:
         metering.release(reservation)
         raise
+    observation.provider = provider.name
     meter = metering.meter(
         request_id=request.state.request_id,
         tenant_id=tenant.tenant_id,
@@ -163,6 +172,7 @@ async def chat_completions(
         provider=provider.name,
         messages=req.messages,
         reservation=reservation,  # settled when its usage is recorded
+        observation=observation,
     )
     headers = limits.headers()
     if not req.stream:

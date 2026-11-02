@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     upstream_max_connections: int = 1000
     upstream_max_keepalive: int = 200
     log_level: str = "INFO"
+    # uvicorn's worker count (it reads WEB_CONCURRENCY itself); metrics assume one.
+    web_concurrency: int = 1
     # Report per-stage timings in a Server-Timing response header (diagnostics).
     server_timing: bool = False
 

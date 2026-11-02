@@ -518,7 +518,7 @@ State this workload alongside every hit-rate and cost number. Hit rate on a diff
 
 ## 10. Security and correctness notes
 
-- Never log raw API keys, provider keys, or prompts by default (`LOG_PROMPTS=false`)
+- Never log raw API keys, provider keys, or prompts. There is no `LOG_PROMPTS` switch to turn prompt logging on: CLAUDE.md forbids logging them at all. A test drives every request path at DEBUG with canary prompts and keys and checks none reaches the logs
 - Provider API keys come only from env, never from the DB or config files
 - Admin endpoints require a separate admin token
 - Rate limiting and auth fail **closed** if Redis is down (503), not open

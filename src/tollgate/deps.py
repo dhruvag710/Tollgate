@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.auth.cache import KeyCache
 from tollgate.config import Settings
+from tollgate.observability.metrics import Metrics
 from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.routing.router import Router
 from tollgate.usage.budget import Budgets
@@ -47,3 +48,8 @@ async def get_limiter(request: Request) -> RateLimiter:
 async def get_budgets(request: Request) -> Budgets:
     budgets: Budgets = request.app.state.budgets
     return budgets
+
+
+async def get_metrics(request: Request) -> Metrics:
+    metrics: Metrics = request.app.state.metrics
+    return metrics

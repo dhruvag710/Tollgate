@@ -19,6 +19,8 @@ from tollgate.auth.cache import KeyCache
 from tollgate.config import Settings, load_providers_file
 from tollgate.db.session import create_engine, create_sessionmaker
 from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
+from tollgate.observability.logging import configure_logging, request_id_var
+from tollgate.observability.metrics import Metrics, Observation
 from tollgate.observability.timing import Timings
 from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
@@ -33,17 +35,21 @@ log = logging.getLogger(__name__)
 
 # How long shutdown waits for requests it cut off to record their usage.
 USAGE_RECORD_TIMEOUT_S = 2.0
+CHAT_PATH = "/v1/chat/completions"
 
 
 class RequestIDMiddleware:
-    """Assigns a request id (echoed as X-Request-ID) and starts the request timer.
+    """Assigns a request id (echoed as X-Request-ID, and on every log line logged
+    during the request), starts the request timer, and records a chat request's
+    metrics once it ends.
 
     Plain ASGI (not BaseHTTPMiddleware) so it never buffers streamed bodies or
     hides client disconnects from the endpoint.
     """
 
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app: ASGIApp, metrics: Metrics):
         self.app = app
+        self._metrics = metrics
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -51,16 +57,27 @@ class RequestIDMiddleware:
             return
         request_id = str(uuid.uuid4())
         started_at = time.perf_counter()
+        timings, observation = Timings(started_at), Observation()
         scope.setdefault("state", {}).update(
-            request_id=request_id, started_at=started_at, timings=Timings(started_at)
+            request_id=request_id, started_at=started_at, timings=timings, observation=observation
         )
 
         async def send_with_id(message: Message) -> None:
             if message["type"] == "http.response.start":
                 message.setdefault("headers", []).append((b"x-request-id", request_id.encode()))
+                if observation.response_started_at is None:
+                    observation.response_started_at = time.perf_counter()
             await send(message)
 
-        await self.app(scope, receive, send_with_id)
+        token = request_id_var.set(request_id)
+        try:
+            await self.app(scope, receive, send_with_id)
+        finally:
+            request_id_var.reset(token)
+            if scope["path"] == CHAT_PATH and scope["method"] == "POST":
+                self._metrics.observe_request(
+                    observation, started_at, time.perf_counter(), timings.upstream_seconds()
+                )
 
 
 def create_app(
@@ -72,7 +89,13 @@ def create_app(
     """Build the gateway. `upstream_transport` lets tests run providers in-process;
     `ledger` replaces the Postgres ledger."""
     settings = settings or Settings()
-    logging.basicConfig(level=settings.log_level)
+    configure_logging(settings.log_level)
+    if settings.web_concurrency > 1:
+        log.warning(
+            "WEB_CONCURRENCY=%d: each worker keeps its own metrics, and a scrape sees only "
+            "one of them. Run one worker per replica and scale with replicas.",
+            settings.web_concurrency,
+        )
     if settings.uses_development_secrets:
         log.warning(
             "DEV_MODE: running with the development KEY_PEPPER/ADMIN_TOKEN. "
@@ -86,6 +109,9 @@ def create_app(
             batch_size=settings.ledger_batch_size, interval_s=settings.ledger_flush_interval_s
         )
     metering = Metering(ledger, Pricing.from_config(providers_file))
+    metrics = Metrics(providers_file.models, (p.name for p in providers_file.providers))
+    if writer is not None:
+        metrics.watch_ledger(lambda: writer.pending)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -127,10 +153,11 @@ def create_app(
     app = FastAPI(title="Tollgate", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.settings = settings
     app.state.metering = metering
+    app.state.metrics = metrics
     install_error_handlers(app)
     # The last added runs outermost: UnhandledErrorMiddleware needs the request id.
     app.add_middleware(UnhandledErrorMiddleware)
-    app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(RequestIDMiddleware, metrics=metrics)
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(chat.router)

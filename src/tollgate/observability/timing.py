@@ -34,9 +34,13 @@ class Timings:
     def add(self, name: str, seconds: float) -> None:
         self._stages[name] = self._stages.get(name, 0.0) + seconds
 
+    def upstream_seconds(self) -> float:
+        """Time spent waiting on the provider so far."""
+        return sum(s for n, s in self._stages.items() if n.startswith(UPSTREAM_PREFIX))
+
     def server_timing(self) -> str:
         total = time.perf_counter() - self.started_at
-        upstream = sum(s for n, s in self._stages.items() if n.startswith(UPSTREAM_PREFIX))
+        upstream = self.upstream_seconds()
         metrics = {
             **self._stages,
             "other": total - sum(self._stages.values()),

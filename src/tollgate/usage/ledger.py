@@ -22,6 +22,7 @@ from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.db.models import UsageEventRow
+from tollgate.observability.metrics import Observation
 from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter, Reservation
 from tollgate.usage.pricing import ZERO, Pricing, micro_usd
@@ -232,11 +233,13 @@ class Metering:
         provider: str,
         messages: list[dict[str, Any]],
         reservation: Reservation | None = None,
+        observation: Observation | None = None,
     ) -> "UsageMeter":
         meter = UsageMeter(
             self, request_id, tenant_id, api_key_id, started_at, model, provider, messages
         )
         meter.reservation = reservation
+        meter.observation = observation
         return meter
 
     def cost_usd(self, model: str, prompt_tokens: int, completion_tokens: int) -> Decimal:
@@ -283,8 +286,11 @@ class Metering:
         started_at: float,
         model: str,
         status: UsageStatus,
+        observation: Observation | None = None,
     ) -> None:
         """The usage event of a request turned away before any provider: no tokens."""
+        if observation is not None:
+            observation.settle(status)
         await self.ledger.record(
             UsageEvent(
                 request_id=request_id,
@@ -349,6 +355,7 @@ class UsageMeter:
         self.generated = ""
         self.first_token_at: float | None = None
         self.reservation: Reservation | None = None  # TPM tokens held, settled on record
+        self.observation: Observation | None = None  # the request's metrics
         self._measured = False
 
     def mark_sent(self) -> None:
@@ -382,6 +389,10 @@ class UsageMeter:
             await asyncio.shield(recording)
 
     async def _record(self) -> None:
+        if self.observation is not None:
+            self.observation.settle(self.status or "gateway_error")
+            if self.first_token_at is not None:
+                self.observation.ttft_s = self.first_token_at - self.started_at
         estimated = self.reported is None and self.sent
         if self.reported is not None:
             prompt, completion = self.reported

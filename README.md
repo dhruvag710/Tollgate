@@ -3,9 +3,10 @@
 A self-hosted, OpenAI-compatible LLM gateway. Point your OpenAI SDK at Tollgate by
 changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** phases 1.1–1.6: passthrough for streaming and non-streaming chat
-completions, the mock provider, tenants with API keys, per-tenant rate limits, and a
-usage ledger in Postgres with monthly budgets.
+**Status:** v1 phases 1.1–1.7: passthrough for streaming and non-streaming chat
+completions, the mock provider, tenants with API keys, per-tenant rate limits, a usage
+ledger in Postgres with monthly budgets, Prometheus metrics and JSON logs, and a
+three-replica setup behind nginx.
 
 Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
 always asks the provider for the final usage chunk, but only forwards it if the client
@@ -67,6 +68,29 @@ its month-to-date spend (UTC) is below it, and refused with an OpenAI-shaped 402
 (`budget_exceeded`) once it isn't. Requests already in flight when the budget is crossed
 still finish, so spend can overshoot by their cost. Raising the budget takes effect at
 once.
+
+## Observability
+
+Each gateway process serves Prometheus metrics at `/metrics`:
+
+| Metric | Type | What |
+|---|---|---|
+| `tollgate_requests_total{status,model,provider,cache}` | counter | chat requests, by outcome: the usage status (`success`, `provider_error`, `client_disconnect`, `rate_limited`, `budget_exceeded`, ...) or, for requests turned away before that, the error code (`auth_unavailable`, `invalid_api_key`, ...) |
+| `tollgate_request_duration_seconds` | histogram | arrival to the end of the response or stream |
+| `tollgate_gateway_overhead_seconds` | histogram | time a request that reached a provider spent in the gateway, not waiting on the provider, until its response started |
+| `tollgate_ttft_seconds` | histogram | streamed requests: arrival to first token |
+| `tollgate_ratelimit_rejections_total{limit}` | counter | `rpm`, `tpm`, `request_too_large` |
+| `tollgate_ledger_queue_depth` | gauge | usage events not yet written to Postgres |
+
+Label values come from fixed sets (configured models and providers, known statuses);
+anything else is `other`, so clients can't create new series. Metrics are per process:
+scrape every replica directly (nginx refuses `/metrics`), and run one uvicorn worker per
+replica (`WEB_CONCURRENCY=1`), scaling with replicas.
+
+Logs are one JSON object per line on stderr (`ts`, `level`, `logger`, `message`,
+`request_id`), uvicorn's included, every line logged during a request carrying its
+`X-Request-ID`. `LOG_LEVEL` sets the level for all of them. Prompts and keys are never
+logged, and the access log drops query strings.
 
 To run three gateway replicas behind nginx, sharing Postgres and Redis:
 `docker compose -f docker-compose.yml -f docker-compose.scale.yml up -d`.

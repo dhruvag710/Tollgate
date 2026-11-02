@@ -11,6 +11,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
 from tollgate.main import RequestIDMiddleware
+from tollgate.observability.metrics import Metrics
 
 
 class Body(BaseModel):
@@ -69,7 +70,7 @@ async def _cut_off(app: Callable[[Scope, Receive, Send], Awaitable[None]]) -> li
     async def send(message: Message) -> None:
         sent.append(message)
 
-    stack = RequestIDMiddleware(UnhandledErrorMiddleware(app))
+    stack = RequestIDMiddleware(UnhandledErrorMiddleware(app), Metrics([], []))
     with pytest.raises(asyncio.CancelledError):  # the cancellation itself goes on
         await stack({"type": "http", "method": "POST", "path": "/"}, receive, send)
     return sent

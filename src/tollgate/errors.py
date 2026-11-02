@@ -92,8 +92,9 @@ def _type_for_status(status_code: int) -> str:
     return "invalid_request_error"
 
 
-async def _tollgate_error_handler(_: Request, exc: Exception) -> JSONResponse:
+async def _tollgate_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, TollgateError)
+    request.state.observation.settle(exc.code)  # unless a usage event already did
     return error_response(exc)
 
 
@@ -145,6 +146,7 @@ class UnhandledErrorMiddleware:
         try:
             await self.app(scope, receive, tracked_send)
         except asyncio.CancelledError:
+            _settle(scope, "gateway_shutdown")
             request_id = scope.get("state", {}).get("request_id")
             log.warning(
                 "request cut off by shutdown, request_id=%s",
@@ -158,6 +160,7 @@ class UnhandledErrorMiddleware:
                     await JSONResponse(body, status_code=503, headers=headers)(scope, receive, send)
             raise
         except Exception:
+            _settle(scope, "internal_error")
             request_id = scope.get("state", {}).get("request_id")
             log.exception(
                 "internal error, request_id=%s", request_id, extra={"request_id": request_id}
@@ -166,3 +169,9 @@ class UnhandledErrorMiddleware:
                 return  # too late for a status code; a stream ends itself with an error event
             body = error_body(internal_error_message(request_id), "api_error", "internal_error")
             await JSONResponse(body, status_code=500)(scope, receive, send)
+
+
+def _settle(scope: Scope, status: str) -> None:
+    observation = scope.get("state", {}).get("observation")
+    if observation is not None:
+        observation.settle(status)

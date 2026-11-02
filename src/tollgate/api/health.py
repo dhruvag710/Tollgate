@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from redis.exceptions import RedisError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+
+from tollgate.observability.metrics import CONTENT_TYPE
 
 router = APIRouter()
 
@@ -34,3 +36,10 @@ async def readyz(request: Request) -> JSONResponse:
         {"status": "ready" if ready else "not_ready", **checks},
         status_code=200 if ready else 503,
     )
+
+
+@router.get("/metrics", include_in_schema=False)
+async def metrics(request: Request) -> Response:
+    """Prometheus metrics for this process. Scrape each replica directly: through
+    nginx (which refuses the path) a scrape would reach a random one."""
+    return Response(request.app.state.metrics.exposition(), media_type=CONTENT_TYPE)

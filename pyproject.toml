@@ -19,6 +19,7 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.13",
     "redis[hiredis]>=5.0",  # hiredis: a native reply parser, ~30% less CPU per call
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]
