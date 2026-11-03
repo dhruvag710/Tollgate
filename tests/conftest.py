@@ -12,7 +12,6 @@ import httpx
 import openai
 import pytest
 from alembic import command
-from alembic.config import Config
 from fastapi import FastAPI
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
@@ -20,12 +19,12 @@ from testcontainers.community.redis import RedisContainer
 from mock_provider.app import create_app as create_mock_app
 from tests.helpers import (
     AUTH,
-    ROOT,
     TEST_ADMIN_TOKEN,
     TEST_KEY,
     TEST_PEPPER,
     TEST_PROVIDERS,
     MemoryLedger,
+    alembic_config,
     issue_key,
 )
 from tollgate.config import Settings
@@ -54,7 +53,7 @@ def backing_services() -> Iterator[None]:
         saved = {name: os.environ.get(name) for name in env}
         os.environ.update(env)
         try:
-            command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
+            command.upgrade(alembic_config(), "head")
             # The tenant behind AUTH, with limits no test reaches by accident.
             asyncio.run(
                 issue_key(

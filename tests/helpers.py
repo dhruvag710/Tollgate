@@ -18,6 +18,7 @@ import httpx
 import pytest
 import uvicorn
 import yaml
+from alembic.config import Config
 from sqlalchemy import select
 
 from tollgate.config import Settings
@@ -43,6 +44,15 @@ ADMIN = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
 # The key of the suite's shared tenant, seeded by tests/integration/conftest.py.
 TEST_KEY = "tg_live_" + "IntegrationSuiteKey0123456789abcdefghijklmno"[:43]
 AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
+
+
+def alembic_config() -> Config:
+    """The migrations' config, for running them from the test process: without
+    alembic.ini's logging, which would add a plain-text handler to the root
+    logger and print every warning the suite logs a second time."""
+    config = Config(str(ROOT / "alembic.ini"))
+    config.attributes["configure_logger"] = False
+    return config
 
 
 async def issue_key(*, raw_key: str | None = None, **tenant_fields: Any) -> tenants.IssuedKey:

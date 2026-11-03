@@ -1,0 +1,57 @@
+# Benchmark stack (SPEC §9): the normal stack plus the scale file's nginx, with
+# fixed CPU and memory limits on every service, quiet logs, and k6 on the same
+# Docker network. bench/run_all.sh runs it as its own compose project:
+#
+#   docker compose -p tollgate-bench -f docker-compose.yml \
+#     -f docker-compose.scale.yml -f bench/docker-compose.bench.yml ...
+#
+# Paths are relative to the repository root (the first file's directory).
+# Every limit here is recorded in BENCHMARKS.md; change one and the numbers
+# there no longer describe this setup.
+services:
+  gateway:
+    environment:
+      # Always the mock: whatever a local .env says, a benchmark never reaches
+      # a real provider.
+      PROVIDERS_CONFIG: config/providers.test.yaml
+      LOG_LEVEL: WARNING
+      WEB_CONCURRENCY: "1"  # one uvicorn worker per replica (metrics are per process)
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 512M}
+
+  mock_provider:
+    # Access log off and warnings only: logging every request would cost the
+    # mock CPU that the benchmark is not about.
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001",
+              "--workers", "1", "--no-access-log", "--log-level", "warning"]
+    deploy:
+      resources:
+        limits: {cpus: "1.5", memory: 512M}
+
+  postgres:
+    # A bounded WAL: the ledger takes hundreds of thousands of rows per run.
+    command: ["postgres", "-c", "max_wal_size=512MB"]
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 1G}
+
+  redis:
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 256M}
+
+  nginx:
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 128M}
+
+  k6:
+    image: grafana/k6:1.0.0
+    profiles: ["bench"]  # run on demand: docker compose run --rm k6 run ...
+    volumes:
+      - ./bench/k6:/scripts:ro
+      - ./bench/results:/results
+    deploy:
+      resources:
+        limits: {cpus: "1.5", memory: 1536M}

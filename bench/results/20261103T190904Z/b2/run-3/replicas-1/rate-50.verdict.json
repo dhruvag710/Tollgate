@@ -1,0 +1,24 @@
+{
+ "rate": 50,
+ "stream": false,
+ "latency_metric": "http_req_duration",
+ "mock": {
+  "requests": 1001,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 1.081231,
+  "p95_ms": 2.12394,
+  "p99_ms": 2.673386
+ },
+ "gateway": {
+  "requests": 1001,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 4.440488,
+  "p95_ms": 8.755181,
+  "p99_ms": 13.413273
+ },
+ "p99_overhead_ms": 10.739887,
+ "limited_by": null,
+ "pass": true
+}

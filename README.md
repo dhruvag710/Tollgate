@@ -3,10 +3,36 @@
 A self-hosted, OpenAI-compatible LLM gateway. Point your OpenAI SDK at Tollgate by
 changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** v1 phases 1.1–1.7: passthrough for streaming and non-streaming chat
-completions, the mock provider, tenants with API keys, per-tenant rate limits, a usage
-ledger in Postgres with monthly budgets, Prometheus metrics and JSON logs, and a
-three-replica setup behind nginx.
+**Status:** v1 (phases 1.1–1.7) is complete: passthrough for streaming and non-streaming
+chat completions, the mock provider, tenants with API keys, per-tenant rate limits, a
+usage ledger in Postgres with monthly budgets, Prometheus metrics and JSON logs, and a
+three-replica setup behind nginx. Benchmarks: [BENCHMARKS.md](BENCHMARKS.md).
+
+## Architecture
+
+```
+  client  (any OpenAI SDK: only base_url changes)
+    │
+    ▼
+  nginx  ·························  optional, for several replicas (docker-compose.scale.yml)
+    │
+    ▼
+  gateway replica(s)  FastAPI + uvicorn, one worker each; /metrics, JSON logs
+    │  │  │
+    │  │  └─►  provider  mock_provider by default; any OpenAI-compatible API
+    │  │                 (OpenAI, OpenRouter, Ollama) via config/providers.yaml
+    │  └────►  Postgres  tenants, API keys, the usage ledger (batched inserts)
+    └───────►  Redis     key cache, budget check, RPM and TPM buckets, month-to-date spend
+```
+
+A chat request, with a cached key, makes one Redis call before the provider: a Lua
+script that authenticates the key, checks the tenant's budget, and takes from both rate
+limits, all or nothing. The provider's response streams straight through. Once its usage
+is known, the request becomes one row in the ledger (queued, written in batches), and one
+more Redis call, off the response path, reconciles its token reservation and adds its
+cost to the tenant's spend. Any number of replicas share Postgres and Redis, so limits,
+budgets and revocations hold across all of them. [SPEC.md §4](SPEC.md) has the full
+lifecycle.
 
 Streaming is a true passthrough: each SSE event is forwarded as it arrives. Tollgate
 always asks the provider for the final usage chunk, but only forwards it if the client
@@ -22,6 +48,9 @@ Internal errors return an OpenAI-shaped 500 that carries only the request ID; a 
 cut off by a shutdown gets a 503 with `Retry-After`, which OpenAI SDKs retry.
 
 ## Quickstart
+
+Needs Docker. The first `--build` downloads base images and installs dependencies, so it
+takes longest; with the images built, these steps took 20 s from `up` to the response.
 
 ```sh
 docker compose up --build -d
@@ -107,6 +136,21 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
+## Performance
+
+Measured against the mock provider on a 4-core laptop (Intel i7-1165G7), each gateway
+replica limited to one CPU; medians of 3 runs. [BENCHMARKS.md](BENCHMARKS.md) has the
+environment, method, ranges across runs and the raw k6 output.
+
+| | Result |
+|---|---|
+| Gateway overhead at 100 RPS, non-streamed | 2.66 ms p50, 43.00 ms p99 |
+| Added time to first chunk, streamed | 1.54 ms p50, 142.34 ms p99 |
+| Max sustained throughput (p99 overhead ≤ 50 ms) | 125 RPS with 1 replica, 250 RPS with 3 |
+
+The p50 is small; the tail misses SPEC's 20 ms p99 target, and one replica can't sustain
+SPEC's 500 RPS on this machine. BENCHMARKS.md explains what limits both.
+
 ## Mock provider
 
 `mock_provider/` is a fake OpenAI-compatible server used by all tests and benchmarks.
@@ -126,6 +170,10 @@ ruff check . && ruff format --check . && mypy
 ```
 
 Integration tests start throwaway Postgres and Redis containers, so they need Docker.
+
+`bash bench/run_all.sh` runs the benchmarks (about an hour) in a separate compose project
+with fixed CPU and memory limits, and writes the raw k6 output to `bench/results/`;
+`python bench/report.py bench/results/<timestamp>` turns it into BENCHMARKS.md's tables.
 
 With `SERVER_TIMING=true`, responses carry a `Server-Timing` header breaking down the
 gateway's time per stage (`auth`, `body`, `upstream-*`, plus `other`, `gateway` and

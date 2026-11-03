@@ -4,6 +4,8 @@ Streaming lives in test_streaming.py.
 """
 
 import asyncio
+import importlib.machinery
+import importlib.metadata
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -393,3 +395,46 @@ def test_shutdown_after_the_request_is_sent_estimates_the_prompt(tmp_path: Path)
 def _mock_stats(mock_url: str) -> dict[str, Any]:
     stats: dict[str, Any] = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     return stats
+
+
+async def test_a_request_searches_sys_path_for_no_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed import isn't cached: code that imports something per call and
+    doesn't find it searches sys.path every time (httpcore's `import sniffio`
+    did, ~4 times a request, ~5-10% of its CPU). Nothing on a request's path may,
+    over a real upstream socket as deployed."""
+    searched: list[str] = []
+    find_spec = importlib.machinery.PathFinder.find_spec.__func__  # type: ignore[attr-defined]
+
+    def counting(cls: type, name: str, path: Any = None, target: Any = None) -> Any:
+        searched.append(name)
+        return find_spec(cls, name, path, target)
+
+    body = {"model": "gpt-4o-mini", "messages": MESSAGES}
+    with run_server(create_mock_app(env={})) as mock_url:
+        app = create_app(
+            Settings(providers_config=write_providers(tmp_path, f"{mock_url}/v1")),
+            ledger=MemoryLedger(),
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://t", headers=AUTH
+            ) as c,
+        ):
+            for stream in (False, True, False):  # a first use may import; that's fine
+                await c.post("/v1/chat/completions", json={**body, "stream": stream})
+            monkeypatch.setattr(importlib.machinery.PathFinder, "find_spec", classmethod(counting))
+            for stream in (False, True) * 5:
+                r = await c.post("/v1/chat/completions", json={**body, "stream": stream})
+                assert r.status_code == 200
+            monkeypatch.undo()
+    assert searched == []
+
+
+def test_sniffio_is_a_runtime_dependency() -> None:
+    # The dev tools bring it in anyway (the OpenAI SDK needs it), so only the
+    # declared dependencies tell whether the gateway's image has it.
+    requires = importlib.metadata.requires("tollgate") or []
+    assert any(r.lower().startswith("sniffio") for r in requires), requires

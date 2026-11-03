@@ -14,8 +14,11 @@ from tollgate.config import DEFAULT_DATABASE_URL
 from tollgate.db.models import Base
 
 config = context.config
-if config.config_file_name is not None:
-    # Keep loggers configured by whoever runs us (e.g. pytest's log capture).
+# alembic.ini's logging is for the `alembic` command. A program running the
+# migrations itself (the test suite) sets configure_logger=False to keep its
+# own: fileConfig would add a plain-text stderr handler to its root logger.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    # Keep loggers configured by whoever runs us.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

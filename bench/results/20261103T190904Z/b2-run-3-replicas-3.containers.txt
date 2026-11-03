@@ -1,0 +1,20 @@
+/tollgate-bench-gateway-1 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"]
+    LOG_LEVEL=WARNING
+    WEB_CONCURRENCY=1
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-gateway-2 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"]
+    LOG_LEVEL=WARNING
+    PROVIDERS_CONFIG=config/providers.test.yaml
+    WEB_CONCURRENCY=1
+/tollgate-bench-gateway-3 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"]
+    WEB_CONCURRENCY=1
+    LOG_LEVEL=WARNING
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-mock_provider-1 cpus=1500000000 memory=536870912 cmd=["uvicorn","app:app","--host","0.0.0.0","--port","8001","--workers","1","--no-access-log","--log-level","warning"]
+    MOCK_LATENCY_MS=0
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+    MOCK_OUTPUT_TOKENS=32
+/tollgate-bench-nginx-1 cpus=500000000 memory=134217728 cmd=["nginx","-g","daemon off;"]
+/tollgate-bench-postgres-1 cpus=1000000000 memory=1073741824 cmd=["postgres","-c","max_wal_size=512MB"]
+/tollgate-bench-redis-1 cpus=500000000 memory=268435456 cmd=["redis-server"]

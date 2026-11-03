@@ -1,0 +1,1 @@
+/tollgate-bench-gateway-1 usage_usec 151652942 user_usec 128590006 system_usec 23062935 nice_usec 0 nr_periods 3874 nr_throttled 218 throttled_usec 13588123 nr_bursts 0 burst_usec 0 
