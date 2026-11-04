@@ -144,12 +144,13 @@ environment, method, ranges across runs and the raw k6 output.
 
 | | Result |
 |---|---|
-| Gateway overhead at 100 RPS, non-streamed | 2.66 ms p50, 43.00 ms p99 |
-| Added time to first chunk, streamed | 1.54 ms p50, 142.34 ms p99 |
-| Max sustained throughput (p99 overhead ≤ 50 ms) | 125 RPS with 1 replica, 250 RPS with 3 |
+| Gateway overhead at 100 RPS, non-streamed | 2.61 ms p50, 13.03 ms p99 |
+| Added time to first chunk at 100 RPS, streamed | 1.13 ms p50, 10.56 ms p99 |
+| Max sustained throughput (p99 overhead ≤ 50 ms) | 250 RPS with 1 replica, 275 RPS with 3 |
 
-The p50 is small; the tail misses SPEC's 20 ms p99 target, and one replica can't sustain
-SPEC's 500 RPS on this machine. BENCHMARKS.md explains what limits both.
+At 100 RPS both p99s are within SPEC's 20 ms target. One replica can't sustain SPEC's
+500 RPS on this machine, and 3 replicas barely outscale one here. BENCHMARKS.md has the
+details, including how a cheaper healthcheck took the p99s down from 43 ms and 142 ms.
 
 ## Mock provider
 

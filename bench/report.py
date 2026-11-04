@@ -1,8 +1,9 @@
 """Tables for BENCHMARKS.md from one bench/run_all.sh results directory.
 
-Reads only k6's raw summaries (<step>.json); every number printed is computed
-from them here. Each benchmark ran several times: a table gives the median
-across runs and, in brackets, the range (lowest to highest run).
+Reads only what the harness recorded: k6's raw summaries (<step>.json) and
+the containers' cgroup CPU counters around each step. Every number printed is
+computed from them here. Each benchmark ran several times: a table gives the
+median across runs and, in brackets, the range (lowest to highest run).
 
     python bench/report.py bench/results/<timestamp>
 """
@@ -16,6 +17,7 @@ from typing import Any
 
 MAX_P99_OVERHEAD_MS = 50  # B2's stopping rule, as in bench/k6/chat.js
 MAX_ERROR_RATE = 0.001
+STATUS_TAG = re.compile(r"^http_reqs\{scenario:(\w+),status:(\d+)\}$")
 
 
 def metric(data: dict[str, Any], name: str, scenario: str, stat: str) -> float:
@@ -23,7 +25,25 @@ def metric(data: dict[str, Any], name: str, scenario: str, stat: str) -> float:
     return float(m["values"].get(stat, 0)) if m else 0.0
 
 
-def side(data: dict[str, Any], scenario: str, latency: str) -> dict[str, float]:
+def statuses(data: dict[str, Any], scenario: str) -> dict[str, int] | None:
+    """{status: requests} for a measured phase; None if the run didn't record them."""
+    counts: dict[str, int] = {}
+    found = False
+    for key, m in data["metrics"].items():
+        match = STATUS_TAG.match(key)
+        if match and match.group(1) == scenario:
+            found = True
+            if m["values"]["count"]:
+                counts[match.group(2)] = int(m["values"]["count"])
+    if not found:
+        return None
+    other = int(metric(data, "http_reqs", scenario, "count")) - sum(counts.values())
+    if other:
+        counts["other"] = other
+    return counts
+
+
+def side(data: dict[str, Any], scenario: str, latency: str) -> dict[str, Any]:
     return {
         "p50": metric(data, latency, scenario, "med"),
         "p95": metric(data, latency, scenario, "p(95)"),
@@ -31,6 +51,8 @@ def side(data: dict[str, Any], scenario: str, latency: str) -> dict[str, float]:
         "requests": metric(data, "http_reqs", scenario, "count"),
         "error_rate": metric(data, "http_req_failed", scenario, "rate"),
         "dropped": metric(data, "dropped_iterations", scenario, "count"),
+        "statuses": statuses(data, scenario),
+        "incomplete": int(metric(data, "incomplete_streams", scenario, "count")),
     }
 
 
@@ -45,9 +67,10 @@ def runs(root: Path, pattern: str) -> list[Path]:
     return sorted(root.glob(pattern), key=lambda p: [int(n) for n in re.findall(r"\d+", p.name)])
 
 
-def gateway_cpu(step: Path) -> dict[str, float]:
-    """The gateways' cgroup CPU counters across a step (summed over replicas):
-    CPU seconds used, and 100 ms quota periods in which they were throttled."""
+def cpu(step: Path, service: str) -> dict[str, float] | None:
+    """A service's cgroup CPU counters across a step, summed over its containers:
+    CPU seconds, CFS periods, periods in which it was throttled and for how long.
+    None if they weren't recorded for that service."""
 
     def read(path: Path) -> dict[str, dict[str, int]]:
         counters = {}
@@ -57,11 +80,22 @@ def gateway_cpu(step: Path) -> dict[str, float]:
         return counters
 
     stem = step.name.removesuffix(".json")
-    before = read(step.with_name(f"{stem}.gateway-cpu-before.txt"))
-    after = read(step.with_name(f"{stem}.gateway-cpu-after.txt"))
+    for before_name, after_name in (
+        (f"{stem}.cpu-before.txt", f"{stem}.cpu-after.txt"),
+        (f"{stem}.gateway-cpu-before.txt", f"{stem}.gateway-cpu-after.txt"),  # earlier runs
+    ):
+        if step.with_name(before_name).exists():
+            before = read(step.with_name(before_name))
+            after = read(step.with_name(after_name))
+            break
+    else:
+        return None
+    names = [n for n in after if n in before and f"-{service}-" in n]
+    if not names:
+        return None
 
     def delta(key: str) -> int:
-        return sum(after[n][key] - before[n][key] for n in after if n in before)
+        return sum(after[n][key] - before[n][key] for n in names)
 
     return {
         "cpu_s": delta("usage_usec") / 1e6,
@@ -71,16 +105,56 @@ def gateway_cpu(step: Path) -> dict[str, float]:
     }
 
 
-def b1(root: Path, kind: str, latency: str, title: str) -> list[str]:
-    files = sorted((root / "b1").glob(f"run-*/{kind}.json"))
-    if not files:
-        return []
-    per_run, cpu = [], []
-    for f in files:
-        data = json.loads(f.read_text(encoding="utf-8"))
+def throttling(c: dict[str, float] | None) -> str:
+    if c is None:
+        return "not recorded"
+    if not c["throttled"]:
+        return f"0 of {c['periods']}"
+    average_ms = 1000 * c["throttled_s"] / c["throttled"]
+    return f"{c['throttled']} of {c['periods']} (avg {average_ms:.0f} ms each)"
+
+
+def non_200(s: dict[str, Any]) -> str:
+    if s["statuses"] is None:
+        return "not recorded"
+    bad = {k: v for k, v in s["statuses"].items() if k != "200"}
+    parts = [f"{n} with status {code}" for code, n in sorted(bad.items())]
+    if s["incomplete"]:
+        parts.append(f"{s['incomplete']} streams without [DONE]")
+    return ", ".join(parts) or "none"
+
+
+def load(step: Path) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(step.read_text(encoding="utf-8"))
+    return data
+
+
+def b1_runs(root: Path, kind: str, latency: str) -> list[dict[str, Any]]:
+    """Per run: both sides, the overhead, and the services' CPU counters."""
+    out = []
+    for f in sorted((root / "b1").glob(f"run-*/{kind}.json")):
+        data = load(f)
         mock, gw = side(data, "mock", latency), side(data, "gateway", latency)
-        per_run.append((mock, gw, {p: gw[p] - mock[p] for p in ("p50", "p95", "p99")}))
-        cpu.append(gateway_cpu(f))
+        served = gw["requests"] + metric(data, "http_reqs", "gateway_warmup", "count")
+        gateway_cpu = cpu(f, "gateway")
+        out.append(
+            {
+                "mock": mock,
+                "gateway": gw,
+                "overhead": {p: gw[p] - mock[p] for p in ("p50", "p95", "p99")},
+                "gateway_cpu": gateway_cpu,
+                "mock_cpu": cpu(f, "mock_provider"),
+                # Across the step, the gateway's CPU covers its warm-up and setup too.
+                "cpu_ms": 1000 * gateway_cpu["cpu_s"] / served if gateway_cpu else None,
+            }
+        )
+    return out
+
+
+def b1(root: Path, kind: str, latency: str, title: str) -> list[str]:
+    per_run = b1_runs(root, kind, latency)
+    if not per_run:
+        return []
     lines = [
         f"#### {title}",
         "",
@@ -89,40 +163,31 @@ def b1(root: Path, kind: str, latency: str, title: str) -> list[str]:
         "| | p50 | p95 | p99 |",
         "|---|---|---|---|",
     ]
-    for label, index in (("Mock, direct", 0), ("Through the gateway", 1), ("**Overhead**", 2)):
-        cells = [spread([r[index][p] for r in per_run]) for p in ("p50", "p95", "p99")]
+    for label, key in (("Mock, direct", "mock"), ("Through the gateway", "gateway")):
+        cells = [spread([r[key][p] for r in per_run]) for p in ("p50", "p95", "p99")]
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
-    requests = [int(r[1]["requests"]) for r in per_run]
-    # The gateway's CPU across the step covers its warm-up and setup requests too.
-    served = [
-        int(
-            metric(
-                json.loads(f.read_text(encoding="utf-8")), "http_reqs", "gateway_warmup", "count"
-            )
-        )
-        + n
-        for f, n in zip(files, requests, strict=True)
-    ]
-    errors = [r[1]["error_rate"] for r in per_run]
-    dropped = [int(r[1]["dropped"] + r[0]["dropped"]) for r in per_run]
+    cells = [spread([r["overhead"][p] for r in per_run]) for p in ("p50", "p95", "p99")]
+    lines.append("| **Overhead** | " + " | ".join(cells) + " |")
     lines += [
         "",
-        f"Requests through the gateway per run: {', '.join(map(str, requests))}; "
-        f"failed: {', '.join(f'{100 * e:.2f}%' for e in errors)}; "
-        f"requests k6 couldn't start on time (both sides): {', '.join(map(str, dropped))}.",
-        "",
-        "Gateway CPU per request, from its cgroup counters across the step: "
-        + ", ".join(f"{1000 * c['cpu_s'] / n:.2f} ms" for c, n in zip(cpu, served, strict=True))
-        + "; 100 ms CPU-quota periods in which it was throttled: "
-        + ", ".join(f"{c['throttled']} of {c['periods']}" for c in cpu)
-        + ".",
-        "",
+        "| Run | Requests (gateway) | Failed | Not started on time | Responses other than "
+        "a complete 200 | Gateway CPU per request | Gateway throttled periods "
+        "| Mock throttled periods |",
+        "|---|---|---|---|---|---|---|---|",
     ]
-    return lines
+    for i, r in enumerate(per_run, 1):
+        gw, mock = r["gateway"], r["mock"]
+        cpu_ms = f"{r['cpu_ms']:.2f} ms" if r["cpu_ms"] is not None else "not recorded"
+        lines.append(
+            f"| {i} | {int(gw['requests'])} | {100 * gw['error_rate']:.2f}% "
+            f"| {int(gw['dropped'] + mock['dropped'])} | {non_200(gw)} | {cpu_ms} "
+            f"| {throttling(r['gateway_cpu'])} | {throttling(r['mock_cpu'])} |"
+        )
+    return [*lines, ""]
 
 
 def b2_step(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = load(path)
     mock = side(data, "mock", "http_req_duration")
     gw = side(data, "gateway", "http_req_duration")
     overhead = gw["p99"] - mock["p99"]
@@ -136,17 +201,31 @@ def b2_step(path: Path) -> dict[str, Any]:
         reasons.append(f"{100 * gw['error_rate']:.2f}% failed")
     if gw["dropped"]:
         reasons.append(f"{int(gw['dropped'])} requests not started on time")
-    rate = int(re.findall(r"\d+", path.name)[0])
     served = gw["requests"] + metric(data, "http_reqs", "gateway_warmup", "count")
-    cpu_ms = 1000 * gateway_cpu(path)["cpu_s"] / served if served else 0.0
+    gateway_cpu = cpu(path, "gateway")
     return {
-        "rate": rate,
+        "rate": int(re.findall(r"\d+", path.name)[0]),
         "overhead": overhead,
         "gw": gw,
         "mock": mock,
         "reasons": reasons,
-        "cpu_ms": cpu_ms,
+        "gateway_cpu": gateway_cpu,
+        "cpu_ms": 1000 * gateway_cpu["cpu_s"] / served if gateway_cpu and served else 0.0,
     }
+
+
+def b2_ramps(root: Path, replicas: int) -> list[tuple[str, list[dict[str, Any]]]]:
+    ramps = []
+    for run_dir in runs(root / "b2", "run-*"):
+        steps = [b2_step(p) for p in runs(run_dir / f"replicas-{replicas}", "rate-*[0-9].json")]
+        if steps:
+            ramps.append((run_dir.name, steps))
+    return ramps
+
+
+def ceiling(steps: list[dict[str, Any]]) -> int:
+    held = [s["rate"] for s in steps if not s["reasons"]]
+    return held[-1] if held else 0
 
 
 def b2(root: Path) -> tuple[list[str], list[str]]:
@@ -163,29 +242,27 @@ def b2(root: Path) -> tuple[list[str], list[str]]:
     medians: dict[int, float] = {}
     for replicas in (1, 3):
         ceilings, endings = [], []
-        for run_dir in runs(root / "b2", "run-*"):
-            steps = [b2_step(p) for p in runs(run_dir / f"replicas-{replicas}", "rate-*[0-9].json")]
-            if not steps:
-                continue
-            held = [s for s in steps if not s["reasons"]]
+        for run_name, steps in b2_ramps(root, replicas):
             failed = next((s for s in steps if s["reasons"]), None)
-            ceilings.append(held[-1]["rate"] if held else 0)
+            ceilings.append(ceiling(steps))
             endings.append(
                 f"{failed['rate']} RPS: {', '.join(failed['reasons'])}" if failed else "step cap"
             )
             detail += [
-                f"{run_dir.name}, {replicas} replica(s):",
+                f"{run_name}, {replicas} replica(s):",
                 "",
-                "| RPS | Gateway p50 / p99 (ms) | Mock p99 (ms) | p99 overhead (ms) "
-                "| Failed | Not started | Gateway CPU per request (ms) | Held |",
-                "|---|---|---|---|---|---|---|---|",
+                "| RPS | Gateway p50 / p99 (ms) | Mock p99 (ms) | p99 overhead (ms) | Failed "
+                "| Not started | Other than 200 | Gateway CPU per request (ms) "
+                "| Gateway throttled periods | Held |",
+                "|---|---|---|---|---|---|---|---|---|---|",
             ]
             for s in steps:
                 detail.append(
                     f"| {s['rate']} | {s['gw']['p50']:.1f} / {s['gw']['p99']:.1f} "
                     f"| {s['mock']['p99']:.1f} | {s['overhead']:.1f} "
                     f"| {100 * s['gw']['error_rate']:.2f}% | {int(s['gw']['dropped'])} "
-                    f"| {s['cpu_ms']:.2f} | {'yes' if not s['reasons'] else 'no'} |"
+                    f"| {non_200(s['gw'])} | {s['cpu_ms']:.2f} | {throttling(s['gateway_cpu'])} "
+                    f"| {'yes' if not s['reasons'] else 'no'} |"
                 )
             detail.append("")
         if ceilings:
@@ -200,11 +277,16 @@ def b2(root: Path) -> tuple[list[str], list[str]]:
     return [*summary, ""], detail
 
 
+def environment(root: Path) -> list[str]:
+    lines = (root / "environment.txt").read_text(encoding="utf-8").splitlines()
+    end = next((i for i, line in enumerate(lines) if line.startswith("--- ")), len(lines))
+    return lines[:end]
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]  # cp1252 consoles
     root = Path(sys.argv[1])
-    env = (root / "environment.txt").read_text(encoding="utf-8").splitlines()
-    out = [f"### Results: `{root.as_posix()}`", "", "```", *env[:8], "```", ""]
+    out = [f"### Results: `{root.as_posix()}`", "", "```", *environment(root), "```", ""]
     out += b1(root, "plain", "http_req_duration", "B1: gateway overhead, non-streamed")
     out += b1(root, "stream", "http_req_waiting", "B1b: time to first chunk, streamed")
     summary, detail = b2(root)

@@ -1,0 +1,8 @@
+tollgate-bench-k6-run-4305b499e5b8 6.56% 39.74MiB / 1.5GiB
+tollgate-bench-gateway-2 11.48% 146.7MiB / 512MiB
+tollgate-bench-gateway-3 9.20% 147.1MiB / 512MiB
+tollgate-bench-nginx-1 1.80% 19.67MiB / 128MiB
+tollgate-bench-gateway-1 8.52% 165.5MiB / 512MiB
+tollgate-bench-redis-1 2.92% 6.098MiB / 256MiB
+tollgate-bench-postgres-1 1.07% 222.4MiB / 1GiB
+tollgate-bench-mock_provider-1 4.71% 108.7MiB / 512MiB

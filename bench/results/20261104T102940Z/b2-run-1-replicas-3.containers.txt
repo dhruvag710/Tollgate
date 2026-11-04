@@ -1,0 +1,20 @@
+/tollgate-bench-gateway-1 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"] cpu.max=100000/100000 healthcheck=["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $status == *' 200 '* ]]"]
+    PROVIDERS_CONFIG=config/providers.test.yaml
+    LOG_LEVEL=WARNING
+    WEB_CONCURRENCY=1
+/tollgate-bench-gateway-2 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"] cpu.max=100000/100000 healthcheck=["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $status == *' 200 '* ]]"]
+    WEB_CONCURRENCY=1
+    LOG_LEVEL=WARNING
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-gateway-3 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"] cpu.max=100000/100000 healthcheck=["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $status == *' 200 '* ]]"]
+    WEB_CONCURRENCY=1
+    LOG_LEVEL=WARNING
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-mock_provider-1 cpus=1500000000 memory=536870912 cmd=["uvicorn","app:app","--host","0.0.0.0","--port","8001","--workers","1","--no-access-log","--log-level","warning"] cpu.max=150000/100000 healthcheck=["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/8001 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $status == *' 200 '* ]]"]
+    MOCK_LATENCY_MS=0
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+    MOCK_OUTPUT_TOKENS=32
+/tollgate-bench-nginx-1 cpus=500000000 memory=134217728 cmd=["nginx","-g","daemon off;"] cpu.max=50000/100000 healthcheck=none
+/tollgate-bench-postgres-1 cpus=1000000000 memory=1073741824 cmd=["postgres","-c","max_wal_size=512MB"] cpu.max=100000/100000 healthcheck=["CMD-SHELL","pg_isready -U tollgate -d tollgate"]
+/tollgate-bench-redis-1 cpus=500000000 memory=268435456 cmd=["redis-server"] cpu.max=50000/100000 healthcheck=["CMD","redis-cli","ping"]

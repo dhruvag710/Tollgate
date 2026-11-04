@@ -1,0 +1,5 @@
+/tollgate-bench-gateway-1 usage_usec 307604985 user_usec 263680806 system_usec 43924179 nice_usec 0 nr_periods 11896 nr_throttled 4 throttled_usec 21553 nr_bursts 0 burst_usec 0 
+/tollgate-bench-gateway-2 usage_usec 26362402 user_usec 23749803 system_usec 2612598 nice_usec 0 nr_periods 2542 nr_throttled 2 throttled_usec 11136 nr_bursts 0 burst_usec 0 
+/tollgate-bench-gateway-3 usage_usec 26857290 user_usec 24132522 system_usec 2724768 nice_usec 0 nr_periods 2540 nr_throttled 1 throttled_usec 763 nr_bursts 0 burst_usec 0 
+/tollgate-bench-mock_provider-1 usage_usec 224286193 user_usec 175165454 system_usec 49120738 nice_usec 0 nr_periods 17772 nr_throttled 0 throttled_usec 0 nr_bursts 0 burst_usec 0 
+/tollgate-bench-nginx-1 usage_usec 6087406 user_usec 2027650 system_usec 4059756 nice_usec 0 nr_periods 1820 nr_throttled 1 throttled_usec 8635 nr_bursts 0 burst_usec 0 

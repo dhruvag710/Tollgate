@@ -1,0 +1,32 @@
+{
+ "rate": 125,
+ "stream": false,
+ "latency_metric": "http_req_duration",
+ "mock": {
+  "requests": 2501,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 1.372486,
+  "p95_ms": 1.944229,
+  "p99_ms": 2.162854,
+  "statuses": {
+   "200": 2501
+  },
+  "incomplete_streams": 0
+ },
+ "gateway": {
+  "requests": 2500,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 3.4767315,
+  "p95_ms": 7.9364123999999965,
+  "p99_ms": 15.52173018999999,
+  "statuses": {
+   "200": 2500
+  },
+  "incomplete_streams": 0
+ },
+ "p99_overhead_ms": 13.358876189999991,
+ "limited_by": null,
+ "pass": true
+}

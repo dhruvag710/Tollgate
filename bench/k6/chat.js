@@ -9,11 +9,17 @@
 // headers with the first SSE chunk, and the mock (no TTFT delay) right before
 // its first chunk, so this is time to first chunk.
 //
+// Every response that isn't a 200, and every stream that ends without
+// [DONE], is logged with its status, k6's error code and the start of its
+// body, and counted by status, so a failure in the results says what it was.
+//
 // Writes OUT.json (k6's raw end-of-test summary data) and OUT.verdict.json
 // (the B2 stopping rule's inputs and result), both under /results.
 
 import http from 'k6/http';
 import { check } from 'k6';
+import exec from 'k6/execution';
+import { Counter } from 'k6/metrics';
 
 const MOCK_URL = __ENV.MOCK_URL || 'http://mock_provider:8001';
 const TARGET = __ENV.TARGET || 'http://gateway:8000';
@@ -41,6 +47,14 @@ const BODY = JSON.stringify({
 });
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+// Statuses counted per phase. Any other shows up as the difference between
+// the phase's total and these; 0 is k6's status for a request that got no
+// response at all (refused, reset, timed out).
+const STATUSES = [0, 200, 400, 401, 402, 404, 408, 413, 429, 500, 502, 503, 504];
+// Streams that answered 200 but never reached [DONE]: the gateway ends a stream
+// that fails midway with an error event instead.
+const incompleteStreams = new Counter('incomplete_streams');
+
 function phase(exec, startS, durationS) {
   return {
     executor: 'constant-arrival-rate',
@@ -59,7 +73,8 @@ const gatewayStart = WARMUP_S + DURATION_S + GAP_S;
 const measured = ['mock', 'gateway'];
 
 export const options = {
-  discardResponseBodies: true,
+  // Bodies are kept so a failure's can be logged; at these rates that costs k6 little.
+  discardResponseBodies: false,
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   scenarios: {
     mock_warmup: phase('mock', 0, WARMUP_S),
@@ -78,6 +93,8 @@ export const options = {
       [`dropped_iterations{scenario:${s}}`, ['count>=0']],
       // The warm-up's request count too, to spread the gateway's CPU over every request.
       [`http_reqs{scenario:${s}_warmup}`, ['count>=0']],
+      [`incomplete_streams{scenario:${s}}`, ['count>=0']],
+      ...STATUSES.map((code) => [`http_reqs{scenario:${s},status:${code}}`, ['count>=0']]),
     ]),
   ),
 };
@@ -100,9 +117,25 @@ export function setup() {
   return { key: key.json('key') };
 }
 
+// Log a failed response, so the step's log says what each failure was.
+function inspect(r) {
+  const scenario = exec.scenario.name;
+  const body = typeof r.body === 'string' ? r.body : '';
+  const complete = !STREAM || body.includes('data: [DONE]');
+  if (r.status === 200 && complete) return;
+  if (r.status === 200) incompleteStreams.add(1);
+  const why = r.status === 200 ? 'stream ended without [DONE]' : `status ${r.status}`;
+  const excerpt = (r.status === 200 ? body.slice(-300) : body.slice(0, 300)).replace(/\s+/g, ' ');
+  console.warn(
+    `failure in ${scenario}: ${why}; k6 error_code ${r.error_code}${r.error ? ` (${r.error})` : ''}` +
+      `; ${Math.round(r.timings.duration)} ms; body: ${excerpt}`,
+  );
+}
+
 export function mock() {
   const r = http.post(`${MOCK_URL}/v1/chat/completions`, BODY, { headers: JSON_HEADERS });
   check(r, { 'status 200': (res) => res.status === 200 });
+  inspect(r);
 }
 
 export function gateway(data) {
@@ -110,11 +143,27 @@ export function gateway(data) {
     headers: { ...JSON_HEADERS, Authorization: `Bearer ${data.key}` },
   });
   check(r, { 'status 200': (res) => res.status === 200 });
+  inspect(r);
 }
 
 function value(data, metric, scenario, stat) {
   const m = data.metrics[`${metric}{scenario:${scenario}}`];
   return m && m.values[stat] !== undefined ? m.values[stat] : 0;
+}
+
+// {status: count} for the phase, the statuses outside STATUSES as "other".
+function statuses(data, scenario) {
+  const counts = {};
+  let counted = 0;
+  for (const code of STATUSES) {
+    const m = data.metrics[`http_reqs{scenario:${scenario},status:${code}}`];
+    const n = m ? m.values.count : 0;
+    if (n) counts[code] = n;
+    counted += n;
+  }
+  const other = value(data, 'http_reqs', scenario, 'count') - counted;
+  if (other) counts.other = other;
+  return counts;
 }
 
 export function handleSummary(data) {
@@ -126,6 +175,8 @@ export function handleSummary(data) {
     p50_ms: value(data, latency, s, 'med'),
     p95_ms: value(data, latency, s, 'p(95)'),
     p99_ms: value(data, latency, s, 'p(99)'),
+    statuses: statuses(data, s),
+    incomplete_streams: value(data, 'incomplete_streams', s, 'count'),
   });
   const mock = side('mock');
   const gw = side('gateway');

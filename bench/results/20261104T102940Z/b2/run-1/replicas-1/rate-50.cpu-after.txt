@@ -1,0 +1,3 @@
+/tollgate-bench-gateway-1 usage_usec 179010966 user_usec 148330112 system_usec 30680853 nice_usec 0 nr_periods 6144 nr_throttled 0 throttled_usec 0 nr_bursts 0 burst_usec 0 
+/tollgate-bench-mock_provider-1 usage_usec 131000256 user_usec 97401569 system_usec 33598686 nice_usec 0 nr_periods 9231 nr_throttled 0 throttled_usec 0 nr_bursts 0 burst_usec 0 
+/tollgate-bench-nginx-1 usage_usec 608269 user_usec 268770 system_usec 339499 nice_usec 0 nr_periods 264 nr_throttled 0 throttled_usec 0 nr_bursts 0 burst_usec 0 

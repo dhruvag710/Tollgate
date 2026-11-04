@@ -26,7 +26,11 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      # bash builtins only: open a TCP connection, send GET /healthz, check the
+      # status line. The check runs inside the container's CPU limit every 5 s,
+      # and starting a Python interpreter for it each time cost the gateway a
+      # share of its CPU and got it throttled (BENCHMARKS.md, healthcheck fix).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $$status == *' 200 '* ]]"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -41,7 +45,8 @@ services:
       MOCK_TOKENS_PER_SEC: ${MOCK_TOKENS_PER_SEC:-0}
       MOCK_OUTPUT_TOKENS: ${MOCK_OUTPUT_TOKENS:-32}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      # As the gateway's: bash builtins, no Python interpreter every 5 s.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8001 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $$status == *' 200 '* ]]"]
       interval: 5s
       timeout: 3s
       retries: 10

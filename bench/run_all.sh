@@ -9,10 +9,12 @@
 #        a step's p99 overhead passes 50 ms, over 0.1% of requests fail, or
 #        k6 can't start requests on time; the last step that held is the ceiling
 #
-# Raw k6 output (end-of-test summary JSON, console log), a docker stats sample
-# and the gateways' cgroup CPU counters around each step land in
+# Raw k6 output (end-of-test summary JSON; console log, which also lists every
+# failed request), a docker stats sample, and the cgroup CPU counters of the
+# gateways, mock and nginx around each step (CPU used, and the CFS-quota
+# periods in which each was throttled) land in
 # bench/results/<UTC timestamp>/; bench/report.py turns it into the
-# tables in BENCHMARKS.md. With the defaults this takes about 90 minutes.
+# tables in BENCHMARKS.md. With the defaults this takes about 80 minutes.
 #
 #   bash bench/run_all.sh
 #   RUNS=1 B2_DURATION_S=10 bash bench/run_all.sh   # a quick smoke run
@@ -46,8 +48,11 @@ log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 containers() {  # each running container's limits and the settings that shape it
   local id
   for id in $("${COMPOSE[@]}" ps -q); do
-    docker inspect --format \
-      '{{.Name}} cpus={{.HostConfig.NanoCpus}} memory={{.HostConfig.Memory}} cmd={{json .Config.Cmd}}' "$id"
+    # cpu.max is the kernel's CFS quota behind --cpus: "<quota>/<period>" in µs.
+    echo "$(docker inspect --format \
+      '{{.Name}} cpus={{.HostConfig.NanoCpus}} memory={{.HostConfig.Memory}} cmd={{json .Config.Cmd}}' "$id")" \
+      "cpu.max=$(docker exec "$id" cat /sys/fs/cgroup/cpu.max | tr ' ' '/')" \
+      "healthcheck=$(docker inspect --format '{{if .Config.Healthcheck}}{{json .Config.Healthcheck.Test}}{{else}}none{{end}}' "$id")"
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" \
       | grep -E '^(LOG_LEVEL|WEB_CONCURRENCY|PROVIDERS_CONFIG|MOCK_[A-Z_]+)=' | sed 's/^/    /' || true
   done
@@ -82,9 +87,9 @@ scale() {  # replicas: run that many gateways, and point nginx at them
   exit 1
 }
 
-gateway_cpu() {  # each gateway container's cgroup CPU counters (usage, throttling)
+service_cpu() {  # cgroup CPU counters (usage, throttling) of the gateways, mock and nginx
   local id
-  for id in $("${COMPOSE[@]}" ps -q gateway); do
+  for id in $("${COMPOSE[@]}" ps -q gateway mock_provider nginx); do
     echo "$(docker inspect --format '{{.Name}}' "$id") $(docker exec "$id" cat /sys/fs/cgroup/cpu.stat | tr '\n' ' ')"
   done
 }
@@ -98,12 +103,12 @@ step() {  # name target rate warmup_s duration_s stream
   local at=$((warmup + duration + 3 + warmup + duration / 2 + 4))
   (sleep "$at"; docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}' \
      | grep tollgate-bench > "$RESULTS/$name.docker-stats.txt") &
-  gateway_cpu > "$RESULTS/$name.gateway-cpu-before.txt"
+  service_cpu > "$RESULTS/$name.cpu-before.txt"
   "${COMPOSE[@]}" --profile bench run --rm -T \
     -e TARGET="$target" -e RATE="$rate" -e WARMUP_S="$warmup" -e DURATION_S="$duration" \
     -e STREAM="$stream" -e OUT="/results/$STAMP/$name" \
     k6 run --quiet --no-color /scripts/chat.js > "$RESULTS/$name.log" 2>&1
-  gateway_cpu > "$RESULTS/$name.gateway-cpu-after.txt"
+  service_cpu > "$RESULTS/$name.cpu-after.txt"
   wait
   tail -3 "$RESULTS/$name.log" | sed 's/^/    /'
 }

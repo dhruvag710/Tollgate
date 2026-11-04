@@ -1,0 +1,13 @@
+ Container tollgate-bench-gateway-2 Running 
+ Container tollgate-bench-gateway-3 Running 
+ Container tollgate-bench-gateway-1 Running 
+ Container tollgate-bench-nginx-1 Running 
+ Container tollgate-bench-redis-1 Running 
+ Container tollgate-bench-postgres-1 Running 
+ Container tollgate-bench-mock_provider-1 Running 
+ Container tollgate-bench-k6-run-4305b499e5b8 Creating 
+ Container tollgate-bench-k6-run-4305b499e5b8 Created 
+rate 50/s, non-streamed (duration), warm-up 5s, measured 20s
+mock     requests    1001  errors 0.000%  dropped 0  p50     1.55 ms  p95     2.05 ms  p99     2.34 ms
+gateway  requests    1001  errors 0.000%  dropped 0  p50     5.46 ms  p95     9.15 ms  p99    10.81 ms
+p99 overhead 8.47 ms -> PASS

@@ -1,0 +1,27 @@
+started_utc: 20261104T102940Z
+git: 42544e45c1e46561cbf63c5b453cf950670d4e7a + uncommitted changes:
+     M bench/k6/chat.js
+     M bench/report.py
+     M bench/run_all.sh
+     M docker-compose.yml
+    ?? bench/compare.py
+    ?? tests/unit/test_compose.py
+shell host: MINGW64_NT-10.0-26300 3.5.7-463ebcdc.x86_64 x86_64
+docker: client 29.6.1, server 29.6.1
+docker VM: 8 CPUs, 8140742656 bytes memory, Docker Desktop, kernel 6.18.33.2-microsoft-standard-WSL2
+CPU (as the VM sees it): 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
+k6: k6 v1.0.0 (commit/41b4984b75-dirty, go1.24.2, linux/amd64)
+parameters: RUNS=3 B1_RATE=100 B1_WARMUP_S=10 B1_DURATION_S=60 B2_START=50 B2_STEP=25 B2_MAX=2000 B2_WARMUP_S=5 B2_DURATION_S=20
+--- containers (one gateway replica)
+/tollgate-bench-gateway-1 cpus=1000000000 memory=536870912 cmd=["uvicorn","--factory","tollgate.main:create_app","--host","0.0.0.0","--port","8000"] cpu.max=100000/100000 healthcheck=["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/8000 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $status == *' 200 '* ]]"]
+    PROVIDERS_CONFIG=config/providers.test.yaml
+    LOG_LEVEL=WARNING
+    WEB_CONCURRENCY=1
+/tollgate-bench-mock_provider-1 cpus=1500000000 memory=536870912 cmd=["uvicorn","app:app","--host","0.0.0.0","--port","8001","--workers","1","--no-access-log","--log-level","warning"] cpu.max=150000/100000 healthcheck=["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/8001 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $status == *' 200 '* ]]"]
+    MOCK_LATENCY_MS=0
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+    MOCK_OUTPUT_TOKENS=32
+/tollgate-bench-nginx-1 cpus=500000000 memory=134217728 cmd=["nginx","-g","daemon off;"] cpu.max=50000/100000 healthcheck=none
+/tollgate-bench-postgres-1 cpus=1000000000 memory=1073741824 cmd=["postgres","-c","max_wal_size=512MB"] cpu.max=100000/100000 healthcheck=["CMD-SHELL","pg_isready -U tollgate -d tollgate"]
+/tollgate-bench-redis-1 cpus=500000000 memory=268435456 cmd=["redis-server"] cpu.max=50000/100000 healthcheck=["CMD","redis-cli","ping"]
