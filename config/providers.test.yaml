@@ -1,5 +1,7 @@
-# Everything points at mock_provider. Used by tests, benchmarks and the
-# default docker compose stack, so no real keys are ever needed.
+# Everything points at the mock providers. Used by tests, benchmarks and the
+# default docker compose stack, so no real keys are ever needed. gpt-4o-mini
+# fails over from mock to mock-secondary, two separate mock processes in the
+# stack; tests that run the gateway in-process send both to one mock app.
 providers:
   - name: mock
     type: openai_compat
@@ -9,7 +11,7 @@ providers:
     forward_mock_headers: true
   - name: mock-secondary
     type: openai_compat
-    base_url: http://mock_provider:8001/v1
+    base_url: http://mock_provider_secondary:8001/v1
     forward_mock_headers: true
 
 models:

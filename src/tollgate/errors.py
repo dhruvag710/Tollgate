@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from tollgate.providers.base import UpstreamResponse
+if TYPE_CHECKING:  # providers.base imports this module
+    from tollgate.providers.base import UpstreamResponse
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def error_response(exc: TollgateError) -> JSONResponse:
     )
 
 
-def upstream_error_response(upstream: UpstreamResponse, provider: str) -> JSONResponse:
+def upstream_error_response(upstream: "UpstreamResponse", provider: str) -> JSONResponse:
     """Relay an upstream error status to the client in OpenAI shape."""
     headers = {"X-Tollgate-Provider": provider}
     if upstream.status_code in (401, 403):

@@ -104,9 +104,11 @@ async def test_success_records_reported_usage(
 
 
 async def test_upstream_500_passes_through(sdk: openai.AsyncOpenAI, ledger: MemoryLedger) -> None:
+    # llama3.1:8b has a single route: with a second, this one mock's 500 would
+    # fail over and come back from there (test_failover.py covers that case).
     with pytest.raises(openai.InternalServerError) as exc:
         await sdk.chat.completions.create(
-            model="gpt-4o-mini",
+            model="llama3.1:8b",
             messages=MESSAGES,
             extra_headers={"X-Mock-Fail-Rate": "1", "X-Mock-Fail-Mode": "500"},
         )
@@ -169,9 +171,11 @@ def _gateway_with(
     tmp_path: Path,
     handler: Callable[[httpx.Request], httpx.Response],
     ledger: MemoryLedger | None = None,
+    *,
+    single_route: bool = False,
     **overrides: Any,
 ) -> FastAPI:
-    config = write_providers(tmp_path, "http://upstream/v1", **overrides)
+    config = write_providers(tmp_path, "http://upstream/v1", single_route=single_route, **overrides)
     return create_app(
         Settings(providers_config=config),
         upstream_transport=httpx.MockTransport(handler),
@@ -226,7 +230,9 @@ async def test_transport_failures(tmp_path: Path, exc: Exception, status: int, c
         raise exc
 
     ledger = MemoryLedger()
-    r = await _post(_gateway_with(tmp_path, handler, ledger))
+    # One route: every provider here is this one failing handler (failing over
+    # to another provider: test_failover.py).
+    r = await _post(_gateway_with(tmp_path, handler, ledger, single_route=True))
     assert r.status_code == status
     assert r.json()["error"]["code"] == code
     assert r.headers["x-tollgate-provider"] == "mock"

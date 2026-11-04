@@ -105,10 +105,25 @@ async def test_refill_runs_on_redis_time(redis: Redis) -> None:
 def test_no_script_takes_the_time_from_the_app() -> None:
     assert "redis.call('TIME')" in LIBRARY
     assert "os.time" not in LIBRARY  # Lua's clock is the app host's, not Redis's
-    # The only arguments are the tenant, its budget and limits, and the tokens
-    # (and cost) involved.
-    assert "ARGV[6]" not in limiter_module._CHECK
-    assert "ARGV[5]" not in limiter_module._SETTLE
+
+    def code(script: str) -> str:  # the script's own lines, without Lua comments
+        lines = script.removeprefix(LIBRARY).splitlines()
+        return "\n".join(line.split("--", 1)[0] for line in lines)
+
+    check, settle = code(limiter_module._CHECK), code(limiter_module._SETTLE)
+    # The check's arguments: the tenant, its budget and limits, the tokens
+    # involved, then the names of the providers whose breakers it reads, on
+    # Redis's clock.
+    assert "ARGV[6]" not in check
+    assert "breaker_views(ARGV, 6, breaker_now_ms())" in check
+    # The settle call's: the tenant, its TPM limit, tokens and cost, then the
+    # provider to count a success for and its breaker's window: a length of
+    # time, not a time. Nothing after.
+    assert "ARGV[6]" in settle and "ARGV[7]" not in settle
+    # Every time the library works with comes from Redis: the functions that
+    # take one are handed now_seconds() or breaker_now_ms(), never an argument.
+    for script in (check, settle):
+        assert "now" not in script.replace("breaker_now_ms()", "")
 
 
 async def test_bucket_state_keeps_microseconds_and_expires(redis: Redis) -> None:

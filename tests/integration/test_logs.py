@@ -193,7 +193,7 @@ async def test_an_internal_error_is_logged_without_the_prompt_or_key(
         app.router.lifespan_context(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client,
     ):
-        provider = app.state.router.route("gpt-4o-mini")
+        provider = app.state.router.registry.providers["mock"]  # gpt-4o-mini's first route
 
         async def broken(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("bug in the gateway")

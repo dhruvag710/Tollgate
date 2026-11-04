@@ -22,13 +22,13 @@ def test_no_healthcheck_starts_a_python_interpreter() -> None:
     # Python for each one cost the gateway a share of its single CPU and got it
     # throttled by the CFS quota (BENCHMARKS.md, healthcheck fix).
     checks = healthchecks()
-    assert {"gateway", "mock_provider"} <= checks.keys()
+    assert {"gateway", "mock_provider", "mock_provider_secondary"} <= checks.keys()
     for name, test in checks.items():
         assert "python" not in " ".join(test).lower(), name
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="runs the checks with a Linux bash (/dev/tcp)")
-@pytest.mark.parametrize("service", ["gateway", "mock_provider"])
+@pytest.mark.parametrize("service", ["gateway", "mock_provider", "mock_provider_secondary"])
 def test_the_http_check_passes_on_200_and_fails_otherwise(service: str) -> None:
     healthy = True
     app = FastAPI()

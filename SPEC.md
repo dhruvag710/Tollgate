@@ -170,13 +170,15 @@ client
 [10] Store in cache if cacheable (v2)
 ```
 
-**Auth, budget and rate limit share one Redis call.** When the key is cached, steps [2], [3] and [4] run as a single Lua script: it authenticates from the key cache and, if the entry is current, checks the budget and then both rate limits, with the tenant's budget and limits as stored in it. A request over budget takes nothing from the rate limits. A cached request therefore costs one Redis round trip before routing; a cache miss adds the Postgres lookup and a separate admission call. The TPM reservation (`estimated_prompt_tokens + max_completion_tokens`, else `max_tokens`, else `TPM_DEFAULT_MAX_TOKENS`) has to be known for that call, so the body is read and estimated before it. A missing or malformed key is still rejected first, before the body is read. A request turned away with a 429 records a `rate_limited` usage event with zero tokens.
+**Auth, budget and rate limit share one Redis call.** When the key is cached, steps [2], [3] and [4] run as a single Lua script: it authenticates from the key cache and, if the entry is current, checks the budget and then both rate limits, with the tenant's budget and limits as stored in it. A request over budget takes nothing from the rate limits. A cached request therefore costs one Redis round trip before routing; a cache miss adds the Postgres lookup and a separate admission call. From v2 the admission call also reads the circuit breakers of the requested model's providers, so step [6] adds no round trip. The TPM reservation (`estimated_prompt_tokens + max_completion_tokens`, else `max_tokens`, else `TPM_DEFAULT_MAX_TOKENS`) has to be known for that call, so the body is read and estimated before it. A missing or malformed key is still rejected first, before the body is read. A request turned away with a 429 records a `rate_limited` usage event with zero tokens.
 
 **Budgets admit while spend is below the budget; overshoot is bounded.** A request's cost is only known once it finishes, so a request is admitted while month-to-date spend is below the budget and refused with a 402 (`insufficient_quota` / `budget_exceeded`, recorded as a zero-token `budget_exceeded` usage event) once it isn't. Requests already in flight when spend crosses the budget still finish, so spend can overshoot by at most their cost: with K requests in flight, under K × the largest request's cost. Nothing is reserved up front: a reservation could not cover a completion with no `max_tokens`, and one left unsettled would stay in the counter for the rest of the month. Spend is kept in Redis in integer micro-dollars, so it sums exactly what the ledger's `cost_usd` does, under the month (UTC) given by Redis server time. A missing counter (the month's first request, or Redis lost its data) is refilled from the ledger's month-to-date `SUM(cost_usd)` with `SET NX`, and costs are only added to a counter that exists, so a refill never overwrites them. Events still queued for the ledger aren't in that sum: a refill can miss up to `LEDGER_FLUSH_INTERVAL_S` of a tenant's spend. Without Postgres to refill from, the request fails closed (503).
 
 **Reconciliation runs off the response path.** Step [8] runs just after the usage event is recorded, as a background task that shutdown waits for, and in one Redis call settles the request: it adds the request's cost to the month's spend, and reconciles its TPM reservation, refunding or charging `actual - reserved` (the balance may go negative and refill pays it back) and never taking the bucket past its limit. If Redis is unavailable then, the bucket keeps the full reservation until refill, which only errs towards admitting less. A request rejected after reserving (say, a model the tenant may not use) gives its reservation back.
 
 **Usage invariant:** every request that reaches a provider (step [7]) produces exactly one usage event, whatever happens: `success`, `provider_error`, `client_disconnect`, `gateway_shutdown` (cut off by a gateway shutdown) or `gateway_error` (an internal error in the gateway). Streaming and non-streaming alike. The event records whatever usage is known: what the provider reported, otherwise, once the request has been sent, a tiktoken estimate (`usage_estimated = TRUE`) of the prompt plus any completion text received, since the provider may bill a request it received even if no response comes back. It records zero tokens only if the request was never sent, or if the provider answered with an error status (nothing is billed for those). Shutdown waits for cut-off requests to record their events before closing anything.
+
+**With failover (v2) the one event covers every attempt.** `attempts` counts the providers tried and `provider` is the last of them. Its tokens are the last attempt's, as above, plus a prompt estimate for each earlier attempt that was sent but never answered, which its provider may still bill; `usage_estimated` is set if any part is an estimate. Earlier attempts answered with an error status, or never sent, add nothing.
 
 **Reconciliation limit:** a stream the gateway abandons while the provider is still sending can't reconcile exactly with the provider's count. Tokens the provider has already sent are still in flight when the gateway hangs up, so the provider counts them and the gateway never sees them. This always applies to `client_disconnect`, and to `gateway_shutdown` or `gateway_error` when they strike mid-stream. Prompt tokens still match exactly; only completion tokens can fall short, by a bounded amount (see C4). Every other event reconciles exactly.
 
@@ -265,7 +267,7 @@ CREATE INDEX ON cache_entries (tenant_id, scope_hash);
 | `tg:rl:tpm:{tenant_id}` | hash `{tokens, ts}` | token budget bucket | 2× window |
 | `tg:rl:sw:{tenant_id}` | zset | sliding window log (v2 comparison) | window |
 | `tg:spend:{tenant_id}:{yyyymm}` | string (int) | month-to-date spend in micro-dollars; month in UTC by Redis time; refilled from the ledger when missing | 40 days |
-| `tg:cb:{provider}` | hash `{state, failures, opened_at}` | circuit breaker (v2) | none |
+| `tg:cb:{provider}` | hash `{state, window_start, requests, failures, prev_requests, prev_failures, open_until, probe, probe_until}` | circuit breaker (v2): the current and previous windows' counts estimate a sliding window; times in ms, Redis time | none |
 | `tg:exact:{tenant_id}:{hash}` | string | exact-match cache (v2) | entry TTL |
 | `tg:usage` | stream | usage events (v2) | trimmed by MAXLEN |
 
@@ -290,6 +292,14 @@ providers:
   - name: ollama
     type: openai_compat
     base_url: http://ollama:11434/v1
+    first_byte_timeout_s: 20     # v2: give up waiting for the first byte sooner (default: timeout_s)
+    breaker: {cooldown_s: 60}    # v2: per-provider overrides of the defaults below
+
+breaker:                         # v2 circuit breaker defaults (Phase 2.1)
+  window_s: 10
+  min_requests: 20
+  failure_ratio: 0.5
+  cooldown_s: 30
 
 models:
   gpt-4o-mini:
@@ -384,11 +394,13 @@ Prices are config values. Verify them against provider pricing pages before repo
 ### v2 — Resilience and caching
 
 **Phase 2.1: Failover and circuit breakers**
-- Router tries providers in configured priority order
-- Per-provider breaker in Redis (shared across replicas): CLOSED → OPEN after N failures in a window → HALF_OPEN after cooldown → one probe request → CLOSED or back to OPEN
+- Router tries providers in configured priority order, each at most once per request
+- Per-provider breaker in Redis (shared across replicas): CLOSED → OPEN once at least `failure_ratio` (default 50%) of at least `min_requests` (default 20) attempts over the last `window_s` (default 10 s; a sliding window, estimated from the current and previous fixed windows) have failed → HALF_OPEN after `cooldown_s` (default 30 s) → one probe request → CLOSED or back to OPEN. Defaults in the providers file's `breaker` section, overridable per provider (§5.3)
+- A breaker counts as failures: connect errors, timeouts before the first byte, 5xx, upstream 429, upstream 401/403 (the provider rejecting Tollgate's own key), and streams that drop or time out midway. Other upstream 4xx are the client's errors: the provider is up, and they count as successes. A client disconnect counts as neither.
 - Retry on the next provider **only if no bytes have been sent to the client**
-- Retry on: connect error, timeout before first byte, 5xx, upstream 429. Never retry 4xx client errors.
-- `attempts` recorded in the usage event
+- Retry on: connect error, timeout before first byte, 5xx, upstream 429, upstream 401/403. Never retry other 4xx (client errors), and never retry a failure after the provider's first byte, even before the client has any: the provider may bill a completion it has started.
+- If every route's breaker is OPEN: 503 (`no_provider_available`) with `Retry-After`, no provider called
+- `attempts` recorded in the usage event (§4)
 - ✅ Accept: see chaos tests X1–X3
 
 **Phase 2.2: Durable usage pipeline**
@@ -456,7 +468,7 @@ Prices are config values. Verify them against provider pricing pages before repo
 - **C4** Ledger accuracy: 10,000 requests → ledger totals equal mock provider counters exactly, for every status but `client_disconnect`. For disconnected streams (and any stream abandoned mid-stream, see §4), prompt tokens match exactly. Their completion tokens never exceed the mock's, and fall short by at most the tokens in flight: 1 + the stream's tokens/s × 200 ms per abandoned stream.
 
 ### Chaos (`tests/chaos/`)
-- **X1** Primary returns 500 for every request → all requests succeed via secondary; breaker opens after N failures
+- **X1** Primary returns 500 for every request → all requests succeed via secondary; breaker opens once `min_requests` attempts have failed (the ratio is then 100%)
 - **X2** Primary recovers → breaker goes HALF_OPEN → CLOSED; traffic returns to primary
 - **X3** Provider drops connection mid-stream → client receives a terminating error event; no retry; usage records partial tokens
 - **X4** Redis restarted during load → gateway fails closed with 503 (not open), recovers without restart

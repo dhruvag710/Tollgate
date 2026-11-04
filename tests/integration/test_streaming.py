@@ -188,11 +188,18 @@ def upstream(*parts: bytes | Exception) -> Callable[[httpx.Request], httpx.Respo
 
 @asynccontextmanager
 async def scripted_gateway(
-    tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response]
+    tmp_path: Path,
+    handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    single_route: bool = False,
 ) -> AsyncIterator[tuple[httpx.AsyncClient, MemoryLedger]]:
+    """A gateway whose every provider is `handler`. A failure before the first
+    byte fails over to the next provider, which is the same handler: tests of
+    how one provider's failure reaches the client ask for a `single_route`."""
     ledger = MemoryLedger()
+    config = write_providers(tmp_path, "http://upstream/v1", single_route=single_route)
     app = create_app(
-        Settings(providers_config=write_providers(tmp_path, "http://upstream/v1")),
+        Settings(providers_config=config),
         upstream_transport=httpx.MockTransport(handler),
         ledger=ledger,
     )
@@ -311,7 +318,8 @@ async def test_upstream_error_event_is_forwarded_once(tmp_path: Path) -> None:
 async def test_failure_before_first_event_is_plain_http_error(
     tmp_path: Path, exc: Exception, status: int, code: str
 ) -> None:
-    async with scripted_gateway(tmp_path, upstream(exc)) as (client, ledger):
+    single = {"single_route": True}  # failing over first: test_failover.py
+    async with scripted_gateway(tmp_path, upstream(exc), **single) as (client, ledger):
         r = await client.post("/v1/chat/completions", json=STREAM_BODY)
     assert r.status_code == status
     assert r.json()["error"]["code"] == code

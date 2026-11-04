@@ -13,11 +13,13 @@ very first sight of a key only that is recorded: its data was read before its
 generation was known. A key's first two requests therefore read Postgres.
 
 Given a TPM reservation, the lookup also admits the request when the entry
-is current, checking the tenant's budget and rate limits as cached in it: one
-round trip authenticates, budget checks and rate limits a request (the
+is current, checking the tenant's budget and rate limits as cached in it, and
+reads the circuit breakers of the providers it will be routed to: one round
+trip authenticates, budget checks, rate limits and routes a request (the
 limiter's own check runs only after a miss).
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -32,7 +34,8 @@ TENANT_OF_TTL_S = 86_400
 _LOOKUP = (
     LIBRARY
     + """
--- ARGV[1]: TPM tokens to reserve, or '' to authenticate only.
+-- ARGV[1]: TPM tokens to reserve, or '' to authenticate only. ARGV[2], ...:
+-- the providers whose breakers an admitted request is routed by.
 local tenant = redis.call('GET', KEYS[2])
 if not tenant then return {false, false, {}, false} end
 -- Keys named from data, so this needs standalone Redis (not Redis Cluster).
@@ -44,6 +47,7 @@ for i = 1, #flat, 2 do entry[flat[i]] = flat[i + 1] end
 if entry.gen ~= gen then return {tenant, gen, flat, false} end
 local rpm, tpm = tonumber(entry.rpm_limit), tonumber(entry.tpm_limit)
 local limits = admit(tenant, entry.monthly_budget_usd, rpm, tpm, tonumber(ARGV[1]))
+if limits[1] == 'ok' then limits[6] = breaker_views(ARGV, 2, breaker_now_ms()) end
 return {tenant, gen, flat, limits}
 """
 )
@@ -84,14 +88,17 @@ class KeyCache:
         self._lookup = redis.register_script(_LOOKUP)
         self._fill = redis.register_script(_FILL)
 
-    async def lookup(self, key_hash: str, *, reservation: int | None = None) -> Lookup:
+    async def lookup(
+        self, key_hash: str, *, reservation: int | None = None, routes: Sequence[str] = ()
+    ) -> Lookup:
         """Authenticate from the cache, and with a `reservation`, also admit the
-        request (budget and rate limits), in the same round trip."""
+        request (budget and rate limits) and read the breakers of `routes`, in
+        the same round trip."""
         reply = cast(
             list[Any],
             await self._lookup(
                 keys=[_entry(key_hash), _tenant_of(key_hash)],
-                args=["" if reservation is None else reservation],
+                args=["" if reservation is None else reservation, *routes],
             ),
         )
         tenant_id, generation, flat, limits = reply

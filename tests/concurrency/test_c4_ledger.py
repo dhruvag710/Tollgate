@@ -68,6 +68,9 @@ def providers_config(tmp_path: Path, exact_url: str, disconnect_url: str) -> Pat
             EXACT: {"routes": ["mock-a"], "price_per_1m": {"input": 0.15, "output": 0.6}},
             DISCONNECTED: {"routes": ["mock-b"], "price_per_1m": {"input": 0.05, "output": 0.1}},
         },
+        # C4 measures the ledger, not the breaker: the mix's failures, 16 in a
+        # row in every hundred, must not open one and turn requests away.
+        "breaker": {"min_requests": 1_000_000},
     }  # fmt: skip
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(config))
@@ -77,6 +80,16 @@ def providers_config(tmp_path: Path, exact_url: str, disconnect_url: str) -> Pat
 def stats(mock_url: str) -> dict[str, int]:
     stats: dict[str, int] = httpx.get(f"{mock_url}/mock/stats", timeout=HTTP_TIMEOUT).json()
     return stats
+
+
+def warm_up(mock_url: str) -> None:
+    """One request straight to a fresh mock, then its counters reset. A mock's
+    first request loads its tokenizer, which can take longer than mock-a's
+    0.5 s read timeout: the first requests of the run would time out."""
+    body = {"model": EXACT, "messages": [{"role": "user", "content": "warm up"}]}
+    url = f"{mock_url}/v1/chat/completions"
+    assert httpx.post(url, json=body, timeout=HTTP_TIMEOUT).status_code == 200
+    httpx.post(f"{mock_url}/mock/stats/reset", timeout=HTTP_TIMEOUT).raise_for_status()
 
 
 async def send(client: httpx.AsyncClient, i: int) -> None:
@@ -123,6 +136,8 @@ async def test_c4_ledger_totals_equal_the_providers_counters(tmp_path: Path) -> 
         run_uvicorn_process("mock_provider.app:app", env={"MOCK_HANG_S": "30"}) as exact_url,
         run_uvicorn_process("mock_provider.app:app") as disconnect_url,
     ):
+        warm_up(exact_url)
+        warm_up(disconnect_url)
         env = {
             "PROVIDERS_CONFIG": str(providers_config(tmp_path, exact_url, disconnect_url)),
             "LOG_LEVEL": "ERROR",  # timeouts and drops each log a warning

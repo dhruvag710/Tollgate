@@ -12,7 +12,7 @@ gateway while the checks do. GET /barrier reports how long they took.
 import asyncio
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -29,7 +29,9 @@ class Barrier:
         self._everyone_here, self._everyone_checked = asyncio.Event(), asyncio.Event()
         self.released = self.finished = 0.0
 
-    async def lookup(self, key_hash: str, *, reservation: int | None = None) -> Lookup:
+    async def lookup(
+        self, key_hash: str, *, reservation: int | None = None, routes: Sequence[str] = ()
+    ) -> Lookup:
         if reservation is None:  # not a chat request: no rate limit
             return await self._lookup(key_hash)
         self._arrived += 1
@@ -37,7 +39,7 @@ class Barrier:
             self.released = time.perf_counter()
             self._everyone_here.set()
         await self._everyone_here.wait()
-        seen = await self._lookup(key_hash, reservation=reservation)
+        seen = await self._lookup(key_hash, reservation=reservation, routes=routes)
         self._checked += 1
         if self._checked == self._size:
             self.finished = time.perf_counter()

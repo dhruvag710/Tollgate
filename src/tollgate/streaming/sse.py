@@ -21,8 +21,21 @@ from tollgate.errors import (
     upstream_error_response,
 )
 from tollgate.observability.timing import Timings
-from tollgate.providers.base import Provider, UpstreamResponse, UpstreamStream, UpstreamStreamError
+from tollgate.providers.base import (
+    Provider,
+    UpstreamError,
+    UpstreamResponse,
+    UpstreamStream,
+    UpstreamStreamError,
+)
 from tollgate.ratelimit.estimate import generated_text
+from tollgate.routing.router import (
+    RoutePlan,
+    error_result,
+    fails_over_error,
+    fails_over_status,
+    status_result,
+)
 from tollgate.usage.ledger import UsageMeter, parse_usage
 
 SSE_HEADERS = [
@@ -113,20 +126,22 @@ class StreamTally:
 
 
 class SSEProxyResponse(Response):
-    """Streams a chat completion from `provider` to the client.
+    """Streams a chat completion to the client from the first of `plan`'s
+    providers that starts one.
 
-    Nothing is sent until the first upstream event arrives, so a failure before
-    that is still an ordinary JSON error response. After it, a failure ends the
-    stream with an error event and is never retried. A watcher on `receive`
-    notices the client disconnecting at any point and cancels the relay, which
-    closes the upstream response and so cancels the upstream request. Being cut
-    off by a server shutdown does the same.
+    Nothing is sent until the first upstream chunk arrives, so a failure before
+    that may fail over to the next provider, or is still an ordinary JSON error
+    response. After it, a failure ends the stream with an error event and is
+    never retried. A watcher on `receive` notices the client disconnecting at
+    any point and cancels the relay, which closes the upstream response and so
+    cancels the upstream request. Being cut off by a server shutdown does the
+    same.
     """
 
     def __init__(
         self,
         *,
-        provider: Provider,
+        plan: RoutePlan,
         body: dict[str, Any],
         client_headers: Mapping[str, str],
         forward_usage_chunk: bool,
@@ -136,7 +151,9 @@ class SSEProxyResponse(Response):
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__()
-        self._provider = provider
+        assert plan.current is not None, "the plan has a first provider"
+        self._plan = plan
+        self._provider: Provider = plan.current
         self._body = body
         self._client_headers = client_headers
         self._meter = meter
@@ -198,34 +215,53 @@ class SSEProxyResponse(Response):
         with contextlib.suppress(Exception):  # sending may be what failed
             await self._send(send, error_event(message, code), more_body=False)
 
-    async def _relay(self, scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            with self._timings.stage("upstream-open"):
+    async def _open(self) -> UpstreamStream | Response:
+        """Open a stream at the plan's providers in turn, up to its first chunk:
+        the stream, or the response to send if none could be opened."""
+        plan, meter = self._plan, self._meter
+        while True:
+            meter.begin_attempt(self._provider.name)
+            started = time.perf_counter()
+            try:
                 opened = await self._provider.open_stream(
-                    self._body, client_headers=self._client_headers, on_sent=self._meter.mark_sent
+                    self._body, client_headers=self._client_headers, on_sent=meter.mark_sent
                 )
-        except TollgateError as exc:
-            self._meter.settle("provider_error")
-            await self._respond(error_response(exc), scope, receive, send)
-            return
-        if isinstance(opened, UpstreamResponse):
-            self._meter.reported = (0, 0)  # an error response: nothing billed
-            self._meter.settle("provider_error")
-            await self._respond(
-                upstream_error_response(opened, self._provider.name), scope, receive, send
-            )
+            except UpstreamError as exc:
+                self._timings.add("upstream-open", time.perf_counter() - started)
+                plan.answered(error_result(exc))
+                nxt = await plan.next() if fails_over_error(exc) else None
+                if nxt is None:
+                    meter.settle("provider_error")
+                    return error_response(exc)
+            else:
+                took = time.perf_counter() - started
+                if not isinstance(opened, UpstreamResponse):
+                    # As v1 reported them: until the headers, then to the first chunk.
+                    self._timings.add("upstream-open", took - opened.first_chunk_s)
+                    self._timings.add("upstream-first-chunk", opened.first_chunk_s)
+                    plan.answered("success")
+                    return opened
+                self._timings.add("upstream-open", took)
+                plan.answered(status_result(opened.status_code))
+                meter.reported = (0, 0)  # an error response: nothing billed
+                nxt = await plan.next() if fails_over_status(opened.status_code) else None
+                if nxt is None:
+                    meter.settle("provider_error")
+                    return upstream_error_response(opened, self._provider.name)
+            self._provider = nxt
+
+    async def _relay(self, scope: Scope, receive: Receive, send: Send) -> None:
+        opened = await self._open()
+        if isinstance(opened, Response):
+            await self._respond(opened, scope, receive, send)
             return
         self._upstream = opened
-        opened_at: float | None = time.perf_counter()
 
         decoder = SSEDecoder()
         tally = self._tally
         failure: UpstreamStreamError | None = None
         try:
             async for chunk in opened.aiter_bytes():
-                if opened_at is not None:
-                    self._timings.add("upstream-first-chunk", time.perf_counter() - opened_at)
-                    opened_at = None
                 if tally.done:
                     # The client already has [DONE]. Read on to the end of the
                     # body so the upstream connection can be reused.
@@ -243,6 +279,8 @@ class SSEProxyResponse(Response):
         except UpstreamStreamError as exc:
             failure = exc
 
+        if tally.upstream_error:
+            self._plan.broke()  # the provider failed the stream itself
         if tally.done:
             return
         if failure is None and (tally.finished or tally.upstream_error):
@@ -254,6 +292,10 @@ class SSEProxyResponse(Response):
             failure = UpstreamStreamError(
                 f"Upstream provider {self._provider.name!r} ended the stream early", timeout=False
             )
+        # Past the provider's first byte: never retried, even if nothing has
+        # reached the client yet (SPEC Phase 2.1).
+        if not tally.upstream_error:
+            self._plan.broke()
         self._meter.settle("provider_error")
         code = "upstream_timeout" if failure.timeout else "upstream_stream_error"
         if self._started:

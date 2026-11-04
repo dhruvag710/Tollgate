@@ -7,10 +7,12 @@ pepper and the admin token are exported as environment variables, so every
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import httpx
 import openai
 import pytest
+import redis
 from alembic import command
 from fastapi import FastAPI
 from testcontainers.community.postgres import PostgresContainer
@@ -29,6 +31,20 @@ from tests.helpers import (
 )
 from tollgate.config import Settings
 from tollgate.main import create_app
+
+CHAOS = Path(__file__).parent / "chaos"
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """The chaos tests run only when asked for by path (`pytest tests/chaos`):
+    they take the compose stack's providers down and restart its Redis, which
+    no plain `pytest` run should do to a stack someone is using."""
+    if collection_path != CHAOS:
+        return None
+    root = config.invocation_params.dir
+    asked = any((root / arg.split("::")[0]).resolve().is_relative_to(CHAOS) for arg in config.args)
+    return None if asked else True
+
 
 # Gateways the tests start (in-process or not) log at WARNING unless LOG_LEVEL
 # says otherwise. At INFO every request adds access-log and HTTP client lines,
@@ -70,6 +86,19 @@ def backing_services() -> Iterator[None]:
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
+
+
+@pytest.fixture
+def closed_breakers(backing_services: None) -> None:
+    """Start with every provider's circuit breaker closed. They live in the
+    session's one Redis, so one test's failures could open them for the next."""
+    client = redis.Redis.from_url(os.environ["REDIS_URL"])
+    try:
+        keys = list(client.scan_iter("tg:cb:*"))
+        if keys:
+            client.delete(*keys)
+    finally:
+        client.close()
 
 
 @pytest.fixture

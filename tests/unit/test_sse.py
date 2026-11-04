@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from starlette.types import Message
 
-from tests.helpers import MemoryLedger
+from tests.helpers import MemoryLedger, single_provider_plan
 from tollgate.observability.timing import Timings
 from tollgate.providers.base import UpstreamResponse
 from tollgate.streaming.sse import (
@@ -119,6 +119,7 @@ class LingeringStream:
         self.error = error
         self.release = asyncio.Event()
         self.closed = False
+        self.first_chunk_s = 0.0
 
     async def aiter_bytes(self) -> AsyncIterator[bytes]:
         yield self.data
@@ -194,7 +195,7 @@ async def _run(
         messages=[{"role": "user", "content": "hi"}],
     )
     response = SSEProxyResponse(
-        provider=FakeProvider(stream, open_error),
+        plan=await single_provider_plan(FakeProvider(stream, open_error)),
         body={},
         client_headers={},
         forward_usage_chunk=False,

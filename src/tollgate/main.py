@@ -13,6 +13,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tollgate.api import health
 from tollgate.api.admin import keys as admin_keys
+from tollgate.api.admin import providers as admin_providers
 from tollgate.api.admin import tenants as admin_tenants
 from tollgate.api.v1 import chat, models
 from tollgate.auth.cache import KeyCache
@@ -26,6 +27,7 @@ from tollgate.providers.registry import ProviderRegistry
 from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.redis_pool import create_redis, open_connections
+from tollgate.routing.circuit_breaker import Breakers, BreakerSettings
 from tollgate.routing.router import Router
 from tollgate.usage.budget import Budgets
 from tollgate.usage.ledger import Ledger, Metering, UsageWriter, postgres_writer
@@ -33,7 +35,8 @@ from tollgate.usage.pricing import Pricing
 
 log = logging.getLogger(__name__)
 
-# How long shutdown waits for requests it cut off to record their usage.
+# How long shutdown waits for requests it cut off to record their usage (and
+# for the breaker reports still running).
 USAGE_RECORD_TIMEOUT_S = 2.0
 CHAT_PATH = "/v1/chat/completions"
 
@@ -131,6 +134,14 @@ def create_app(
         app.state.key_cache = KeyCache(redis)
         app.state.limiter = metering.limiter = RateLimiter(redis)
         app.state.budgets = Budgets(redis, app.state.sessions)
+        breakers = Breakers(
+            redis,
+            {
+                p.name: BreakerSettings.of(providers_file.breaker_for(p), p)
+                for p in providers_file.providers
+            },
+            on_transition=metrics.breaker_transition,
+        )
         if writer is not None:
             writer.start(postgres_writer(app.state.sessions))
         try:
@@ -139,10 +150,12 @@ def create_app(
                 redis, min(settings.redis_min_connections, settings.redis_max_connections)
             )
             async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
-                app.state.router = Router(ProviderRegistry.from_config(providers_file, client))
+                registry = ProviderRegistry.from_config(providers_file, client)
+                app.state.router = Router(registry, breakers, metrics)
                 yield
                 with anyio.move_on_after(USAGE_RECORD_TIMEOUT_S):
                     await metering.wait_idle()
+                    await breakers.wait_idle()
         finally:
             # After every request has recorded its event: shutdown flushes them all.
             if writer is not None:
@@ -163,4 +176,5 @@ def create_app(
     app.include_router(chat.router)
     app.include_router(admin_tenants.router)
     app.include_router(admin_keys.router)
+    app.include_router(admin_providers.router)
     return app

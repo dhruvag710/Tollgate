@@ -81,6 +81,30 @@ class Settings(BaseSettings):
         )
 
 
+class BreakerConfig(BaseModel):
+    """A provider's circuit breaker (SPEC Phase 2.1): OPEN once at least
+    `failure_ratio` of at least `min_requests` attempts in a `window_s` window
+    have failed; one probe request after `cooldown_s` decides whether it closes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_s: float = Field(default=10.0, gt=0)
+    min_requests: int = Field(default=20, ge=1)
+    failure_ratio: float = Field(default=0.5, gt=0, le=1)
+    cooldown_s: float = Field(default=30.0, gt=0)
+
+
+class BreakerOverrides(BaseModel):
+    """A provider's departures from the file's breaker defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_s: float | None = Field(default=None, gt=0)
+    min_requests: int | None = Field(default=None, ge=1)
+    failure_ratio: float | None = Field(default=None, gt=0, le=1)
+    cooldown_s: float | None = Field(default=None, gt=0)
+
+
 class ProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -88,8 +112,15 @@ class ProviderConfig(BaseModel):
     type: Literal["openai_compat"]
     base_url: str
     api_key_env: str | None = None
-    timeout_s: float = 60.0
-    connect_timeout_s: float = 3.0
+    # Each read from the provider; also the wait for the first byte, unless
+    # first_byte_timeout_s is shorter.
+    timeout_s: float = Field(default=60.0, gt=0)
+    connect_timeout_s: float = Field(default=3.0, gt=0)
+    # How long, from sending the request, to wait for the first byte of the
+    # response: for a stream, its first chunk; otherwise the response itself.
+    # A request that times out before it fails over to the next provider.
+    first_byte_timeout_s: float | None = Field(default=None, gt=0)
+    breaker: BreakerOverrides = BreakerOverrides()
     # Forward X-Mock-* request headers upstream. Only for mock_provider.
     forward_mock_headers: bool = False
 
@@ -111,6 +142,8 @@ class ProvidersFile(BaseModel):
 
     providers: list[ProviderConfig]
     models: dict[str, ModelConfig]
+    # Every provider's breaker, unless the provider overrides a setting.
+    breaker: BreakerConfig = BreakerConfig()
 
     @model_validator(mode="after")
     def _check_references(self) -> Self:
@@ -121,7 +154,14 @@ class ProvidersFile(BaseModel):
             unknown = [r for r in cfg.routes if r not in names]
             if unknown:
                 raise ValueError(f"model {model!r} routes to unknown provider(s): {unknown}")
+            if len(cfg.routes) != len(set(cfg.routes)):
+                raise ValueError(f"model {model!r} lists a provider twice in its routes")
         return self
+
+    def breaker_for(self, provider: ProviderConfig) -> BreakerConfig:
+        """The provider's breaker: the file's defaults with its overrides."""
+        overrides = provider.breaker.model_dump(exclude_none=True)
+        return self.breaker.model_copy(update=overrides)
 
 
 def load_providers_file(path: Path) -> ProvidersFile:

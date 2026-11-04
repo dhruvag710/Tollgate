@@ -4,6 +4,7 @@ call when asked (steps 3 and 4), and guards the admin API."""
 
 import hmac
 import logging
+from collections.abc import Sequence
 from typing import Annotated
 
 from fastapi import Depends, Request
@@ -84,14 +85,15 @@ async def authenticate(
     *,
     budgets: Budgets | None = None,
     reservation: int | None = None,
+    routes: Sequence[str] = (),
 ) -> tuple[TenantContext, Decision | None]:
     """The key's tenant, and with a TPM `reservation` (and `budgets`) the
-    admission decision: from the same Redis call when the key is cached, one
-    more call after a miss, and a refill when the month's spend counter is
-    missing."""
+    admission decision, carrying the breakers of the providers in `routes`:
+    from the same Redis call when the key is cached, one more call after a
+    miss, and a refill when the month's spend counter is missing."""
     with request.state.timings.stage("auth"):
         return await _authenticate(
-            raw_key, settings, sessions, cache, limiter, budgets, reservation
+            raw_key, settings, sessions, cache, limiter, budgets, reservation, routes
         )
 
 
@@ -103,13 +105,14 @@ async def _authenticate(
     limiter: RateLimiter,
     budgets: Budgets | None,
     reservation: int | None,
+    routes: Sequence[str],
 ) -> tuple[TenantContext, Decision | None]:
     key_hash = keys.hash_key(raw_key, settings.key_pepper.get_secret_value())
     try:
-        context, limits = await _resolve(key_hash, sessions, cache, limiter, reservation)
+        context, limits = await _resolve(key_hash, sessions, cache, reservation, routes)
         if context is not None and reservation is not None:
             assert budgets is not None, "admitting a request needs budgets"
-            limits = await _admit(context, limits, limiter, budgets, reservation)
+            limits = await _admit(context, limits, limiter, budgets, reservation, routes)
     except (RedisError, SQLAlchemyError, OSError, TimeoutError, SpendUnknown) as exc:
         # Fail closed: without Redis or Postgres no key can be checked.
         log.warning("auth backend unavailable: %s", type(exc).__name__)
@@ -128,10 +131,10 @@ async def _resolve(
     key_hash: str,
     sessions: async_sessionmaker[AsyncSession],
     cache: KeyCache,
-    limiter: RateLimiter,
     reservation: int | None,
+    routes: Sequence[str],
 ) -> tuple[TenantContext | None, Decision | None]:
-    seen = await cache.lookup(key_hash, reservation=reservation)
+    seen = await cache.lookup(key_hash, reservation=reservation, routes=routes)
     if seen.context is not None:
         return seen.context, seen.decision
     async with sessions() as session, session.begin():
@@ -148,6 +151,7 @@ async def _admit(
     limiter: RateLimiter,
     budgets: Budgets,
     reservation: int,
+    routes: Sequence[str],
 ) -> Decision:
     """`limits` from the cached lookup, or the limiter's own check after a miss;
     a missing spend counter is refilled from the ledger and the check repeated."""
@@ -164,6 +168,7 @@ async def _admit(
             rpm_limit=context.rpm_limit,
             tpm_limit=context.tpm_limit,
             reservation=reservation,
+            routes=routes,
         )
     return limits
 

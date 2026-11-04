@@ -75,7 +75,14 @@ async def test_each_chat_request_is_counted_once_by_outcome() -> None:
     got = samples(r.text)
 
     assert got[requests("success")] == 3
-    assert got[requests("provider_error")] == 1
+    # The 500 failed over to the second route (here the same mock, failing
+    # again): still one request, labelled by the provider that answered last.
+    assert got[requests("provider_error", provider="mock-secondary")] == 1
+    assert requests("provider_error") not in got
+    # Both attempts, one per provider.
+    for provider in ("mock", "mock-secondary"):
+        labels = {"provider": provider, "result": "server_error"}
+        assert got[plain("tollgate_provider_attempts_total", **labels)] == 1
     # Turned away before any provider: no provider label.
     assert got[requests("rate_limited", provider="none")] == 1
     assert got[requests("budget_exceeded", provider="none")] == 1

@@ -1,4 +1,5 @@
-"""POST /v1/chat/completions: streaming and non-streaming passthrough."""
+"""POST /v1/chat/completions: streaming and non-streaming passthrough, with
+failover across the model's providers (SPEC Phase 2.1)."""
 
 import json
 from functools import partial
@@ -26,10 +27,18 @@ from tollgate.deps import (
 from tollgate.errors import TollgateError, upstream_error_response
 from tollgate.observability.metrics import Metrics, Observation
 from tollgate.observability.timing import Timings
-from tollgate.providers.base import Provider
+from tollgate.providers.base import UpstreamError
 from tollgate.ratelimit.estimate import generated_text, reservation_tokens
 from tollgate.ratelimit.limiter import RateLimiter, Reservation
-from tollgate.routing.router import Router, model_not_found
+from tollgate.routing.router import (
+    RoutePlan,
+    Router,
+    error_result,
+    fails_over_error,
+    fails_over_status,
+    model_not_found,
+    status_result,
+)
 from tollgate.streaming.sse import SSEProxyResponse
 from tollgate.usage.budget import Budgets
 from tollgate.usage.ledger import Metering, UsageMeter, parse_usage
@@ -129,6 +138,7 @@ async def chat_completions(
             reserve = estimate()
         else:
             reserve = await anyio.to_thread.run_sync(estimate)
+    # The same call reads the breakers of the model's providers, for routing.
     tenant, limits = await authenticate(
         request,
         raw_key,
@@ -138,6 +148,7 @@ async def chat_completions(
         limiter,
         budgets=budgets,
         reservation=reserve,
+        routes=router_.routes(req.model),
     )
     assert limits is not None  # asked for with a reservation
     if not limits.allowed:
@@ -158,11 +169,18 @@ async def chat_completions(
     try:
         if not tenant.allows(req.model):
             raise model_not_found(req.model)
-        provider = router_.route(req.model)
+        plan = router_.plan(
+            req.model,
+            limits.breakers,
+            request_id=request.state.request_id,
+            observation=observation,
+        )
+        provider = await plan.next()
+        if provider is None:
+            raise plan.unavailable()  # never reached a provider: no usage event
     except TollgateError:
         metering.release(reservation)
         raise
-    observation.provider = provider.name
     meter = metering.meter(
         request_id=request.state.request_id,
         tenant_id=tenant.tenant_id,
@@ -174,16 +192,17 @@ async def chat_completions(
         reservation=reservation,  # settled when its usage is recorded
         observation=observation,
     )
+    meter.finish = plan.finish
     headers = limits.headers()
     if not req.stream:
         async with meter.measure():
             return await _complete(
-                request, body, provider, meter, timings, settings.server_timing, headers
+                request, body, plan, meter, timings, settings.server_timing, headers
             )
 
     client_options = req.stream_options or {}
     return SSEProxyResponse(
-        provider=provider,
+        plan=plan,
         # Always ask upstream for the final usage chunk; keep the client's other options.
         body={**body, "stream_options": {**client_options, "include_usage": True}},
         client_headers=request.headers,
@@ -198,24 +217,41 @@ async def chat_completions(
 async def _complete(
     request: Request,
     body: dict[str, Any],
-    provider: Provider,
+    plan: RoutePlan,
     meter: UsageMeter,
     timings: Timings,
     server_timing: bool,
     extra_headers: dict[str, str],
 ) -> Response:
-    try:
-        with timings.stage("upstream-response"):
-            upstream = await provider.chat_completion(
-                body, client_headers=request.headers, on_sent=meter.mark_sent
-            )
-    except TollgateError:
-        meter.settle("provider_error")
-        raise
-    if upstream.status_code >= 400:
-        meter.reported = (0, 0)
-        meter.settle("provider_error")
-        return upstream_error_response(upstream, provider.name)
+    """Try the plan's providers in turn until one answers or none is left.
+    Nothing reaches the client before an answer, so any failure the policy
+    allows may still be retried."""
+    provider = plan.current
+    assert provider is not None, "the plan has a first provider"
+    while True:
+        meter.begin_attempt(provider.name)
+        try:
+            with timings.stage("upstream-response"):
+                upstream = await provider.chat_completion(
+                    body, client_headers=request.headers, on_sent=meter.mark_sent
+                )
+        except UpstreamError as exc:
+            plan.answered(error_result(exc))
+            nxt = await plan.next() if fails_over_error(exc) else None
+            if nxt is None:
+                meter.settle("provider_error")
+                raise
+            provider = nxt
+            continue
+        plan.answered(status_result(upstream.status_code))
+        if upstream.status_code < 400:
+            break
+        meter.reported = (0, 0)  # an error response: nothing billed
+        nxt = await plan.next() if fails_over_status(upstream.status_code) else None
+        if nxt is None:
+            meter.settle("provider_error")
+            return upstream_error_response(upstream, provider.name)
+        provider = nxt
 
     meter.reported = parse_usage(upstream.body.get("usage"))
     choices = upstream.body.get("choices")

@@ -23,6 +23,8 @@ services:
         condition: service_completed_successfully
       mock_provider:
         condition: service_healthy
+      mock_provider_secondary:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -39,17 +41,27 @@ services:
     build: ./mock_provider
     ports:
       - "8001:8001"
-    environment:
+    environment: &mock-environment
       MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-0}
       MOCK_TTFT_MS: ${MOCK_TTFT_MS:-0}
       MOCK_TOKENS_PER_SEC: ${MOCK_TOKENS_PER_SEC:-0}
       MOCK_OUTPUT_TOKENS: ${MOCK_OUTPUT_TOKENS:-32}
-    healthcheck:
+    healthcheck: &mock-healthcheck
       # As the gateway's: bash builtins, no Python interpreter every 5 s.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8001 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && read -r -t 2 status <&3 && [[ $$status == *' 200 '* ]]"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # A second, independent provider: the failover target in
+  # config/providers.test.yaml (SPEC Phase 2.1), which the chaos tests can
+  # keep healthy while they take the first one down.
+  mock_provider_secondary:
+    build: ./mock_provider
+    ports:
+      - "8002:8001"
+    environment: *mock-environment
+    healthcheck: *mock-healthcheck
 
   # Runs the migrations once, before any gateway replica starts.
   migrate:

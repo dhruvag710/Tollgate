@@ -6,7 +6,8 @@ changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 **Status:** v1 (phases 1.1–1.7) is complete: passthrough for streaming and non-streaming
 chat completions, the mock provider, tenants with API keys, per-tenant rate limits, a
 usage ledger in Postgres with monthly budgets, Prometheus metrics and JSON logs, and a
-three-replica setup behind nginx. Benchmarks: [BENCHMARKS.md](BENCHMARKS.md).
+three-replica setup behind nginx. Benchmarks: [BENCHMARKS.md](BENCHMARKS.md). v2 adds
+provider failover with circuit breakers shared by every replica (Phase 2.1).
 
 ## Architecture
 
@@ -19,10 +20,12 @@ three-replica setup behind nginx. Benchmarks: [BENCHMARKS.md](BENCHMARKS.md).
     ▼
   gateway replica(s)  FastAPI + uvicorn, one worker each; /metrics, JSON logs
     │  │  │
-    │  │  └─►  provider  mock_provider by default; any OpenAI-compatible API
-    │  │                 (OpenAI, OpenRouter, Ollama) via config/providers.yaml
-    │  └────►  Postgres  tenants, API keys, the usage ledger (batched inserts)
-    └───────►  Redis     key cache, budget check, RPM and TPM buckets, month-to-date spend
+    │  │  └─►  providers  each model's, in priority order, failing over between them;
+    │  │                  the mock providers by default, or any OpenAI-compatible API
+    │  │                  (OpenAI, OpenRouter, Ollama) via config/providers.yaml
+    │  └────►  Postgres   tenants, API keys, the usage ledger (batched inserts)
+    └───────►  Redis      key cache, budget check, RPM and TPM buckets, month-to-date
+                          spend, the providers' circuit breakers
 ```
 
 A chat request, with a cached key, makes one Redis call before the provider: a Lua
@@ -41,9 +44,32 @@ partial usage is recorded, estimated with tiktoken. An upstream failure after th
 event ends the stream with an OpenAI-style error event; a failure before it is a normal
 HTTP error.
 
+### Failover and circuit breakers
+
+A model lists its providers in priority order (`routes` in the providers file). A
+request that fails at one before any byte of the response has arrived moves on to the
+next: a connection error, a timeout before the first byte (`first_byte_timeout_s`, by
+default the read timeout), a 5xx, a 429, or a 401/403 (the provider refusing Tollgate's
+own key). A client error (any other 4xx) is relayed, never retried, and so is anything
+that fails after the provider's first byte: a stream that breaks midway ends with an
+error event, since the provider may already bill what it started.
+
+Each provider has a circuit breaker in Redis, shared by every replica. It opens once at
+least half of at least 20 attempts over the last 10 s have failed. Requests then skip
+the provider for a 30 s cooldown, after which one request, across all replicas, probes
+it: success closes the breaker, failure opens it again. The defaults can be changed in
+the providers file, and per provider. If every route is open the request gets a 503 with
+`Retry-After`. Routing costs no Redis call of its own: the admission call already reads
+the breakers, and the settle call each request makes counts its success.
+`GET /admin/providers` shows each breaker's state.
+
+### Usage
+
 Every request that reaches a provider produces exactly one usage event, whatever happens:
 `success`, `provider_error`, `client_disconnect`, `gateway_shutdown` (cut off by a shutdown)
-or `gateway_error` (an internal error), with whatever usage is known. See SPEC.md §4.
+or `gateway_error` (an internal error), with whatever usage is known. After a failover the
+one event covers every attempt (`attempts`), adding an estimate for a provider that was
+sent the prompt and never answered, since it may bill it. See SPEC.md §4.
 Internal errors return an OpenAI-shaped 500 that carries only the request ID; a request
 cut off by a shutdown gets a 503 with `Retry-After`, which OpenAI SDKs retry.
 
@@ -63,7 +89,8 @@ curl -s localhost:8000/v1/chat/completions \
   -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
-The default stack routes every model to `mock_provider`, so no provider keys are needed,
+The default stack routes every model to the mock providers (`gpt-4o-mini` fails over from
+`mock_provider` to `mock_provider_secondary`), so no provider keys are needed,
 and runs with `DEV_MODE=true` and development-only `KEY_PEPPER` and `ADMIN_TOKEN`
 values (the gateway warns about this at startup). Without `DEV_MODE` it refuses to start
 with those values. Anywhere but your own machine, copy `.env.example` to `.env`, set real
@@ -158,8 +185,9 @@ details, including how a cheaper healthcheck took the p99s down from 43 ms and 1
 Behaviour is set by env var at startup or per request with headers (`X-Mock-Latency-Ms`,
 `X-Mock-TTFT-Ms`, `X-Mock-Tokens-Per-Sec`, `X-Mock-Fail-Rate`, `X-Mock-Fail-Mode`,
 `X-Mock-Output-Tokens`, `X-Mock-Seed`). The same seed always produces the same output.
-`GET /mock/stats` reports the tokens it served. See the docstring in
-[mock_provider/app.py](mock_provider/app.py) for details.
+`PUT /mock/behaviour` changes its defaults while it runs, which is how the chaos tests
+take one provider down and bring it back. `GET /mock/stats` reports the tokens it served.
+See the docstring in [mock_provider/app.py](mock_provider/app.py) for details.
 
 ## Development
 
@@ -171,6 +199,11 @@ ruff check . && ruff format --check . && mypy
 ```
 
 Integration tests start throwaway Postgres and Redis containers, so they need Docker.
+
+The chaos tests (SPEC §8: X1–X4) run against the compose stack, and only when asked for:
+`docker compose up -d --build`, then `pytest tests/chaos`. They take a mock provider down
+and restart Redis, so nothing else should be using the stack; X2 waits out a 30 s
+breaker cooldown.
 
 `bash bench/run_all.sh` runs the benchmarks (about an hour) in a separate compose project
 with fixed CPU and memory limits, and writes the raw k6 output to `bench/results/`;

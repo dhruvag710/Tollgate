@@ -17,6 +17,13 @@ Process-only settings: MOCK_MODELS (comma-separated list for /v1/models),
 MOCK_HANG_S (how long `timeout` mode hangs), MOCK_FAIL_SEED (seeds the
 fail/no-fail draws).
 
+PUT /mock/behaviour replaces the env defaults while the process runs: a JSON
+object of knobs, by their lowercase names ({"fail_rate": 1, "fail_mode":
+"500"}), on top of the env's values; {} restores them. GET shows the current
+defaults. Headers still override per request. This is how a test takes a
+provider down, and brings it back, for every request the gateway sends it
+(chaos tests X1, X2).
+
 Tokens are counted with tiktoken exactly as Tollgate estimates them (same
 model-to-encoding rule, same chat framing), so the ledger's estimates for
 requests the mock never finished answering match the mock's own counts.
@@ -247,10 +254,15 @@ def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
 
     app = FastAPI(title="Tollgate mock provider", docs_url=None, redoc_url=None)
     app.state.stats = Stats()
+    app.state.behaviour = defaults
 
     def stats() -> Stats:
         s: Stats = app.state.stats
         return s
+
+    def behaviour() -> Behaviour:
+        b: Behaviour = app.state.behaviour
+        return b
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -274,6 +286,29 @@ def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
         app.state.stats = Stats()
         return asdict(stats())
 
+    @app.get("/mock/behaviour")
+    async def get_behaviour() -> dict[str, Any]:
+        return asdict(behaviour())
+
+    @app.put("/mock/behaviour")
+    async def set_behaviour(request: Request) -> Any:
+        try:
+            knobs = await request.json()
+        except ValueError:
+            return _error(400, "Request body is not valid JSON", "invalid_request_error")
+        names = {f.name for f in fields(Behaviour)}
+        if not isinstance(knobs, dict) or not set(knobs) <= names:
+            return _error(
+                400, f"Expected an object with keys from {sorted(names)}", "invalid_request_error"
+            )
+        try:
+            app.state.behaviour = defaults.with_overrides(
+                {k: str(v) for k, v in knobs.items()}, lambda name: name
+            )
+        except BadKnob as exc:
+            return _error(400, str(exc), "invalid_request_error", "bad_mock_behaviour")
+        return asdict(behaviour())
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
         try:
@@ -284,7 +319,7 @@ def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
             return _error(400, "Request body must be a JSON object", "invalid_request_error")
 
         try:
-            beh = defaults.with_overrides(request.headers, Behaviour.header_name)
+            beh = behaviour().with_overrides(request.headers, Behaviour.header_name)
             header_seed = request.headers.get("x-mock-seed")
             seed = (
                 _parse_seed(header_seed) if header_seed is not None else body.get("seed", env_seed)

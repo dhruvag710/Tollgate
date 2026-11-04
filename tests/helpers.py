@@ -25,6 +25,9 @@ from tollgate.config import Settings
 from tollgate.db import tenants
 from tollgate.db.models import UsageEventRow
 from tollgate.db.session import create_engine, create_sessionmaker
+from tollgate.observability.metrics import Metrics
+from tollgate.routing.circuit_breaker import CLOSED, BreakerSuccess
+from tollgate.routing.router import RoutePlan
 from tollgate.usage.ledger import UsageEvent
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -187,15 +190,57 @@ def run_uvicorn_process(
             sink.close()
 
 
-def write_providers(tmp_path: Path, base_url: str, **provider_overrides: Any) -> Path:
-    """Copy of the test providers config with every base_url replaced."""
+def write_providers(
+    tmp_path: Path, base_url: str, *, single_route: bool = False, **provider_overrides: Any
+) -> Path:
+    """Copy of the test providers config with every base_url replaced.
+
+    With `single_route`, every model routes to its first provider only. All the
+    providers here share one upstream, so a failure a test injects into it fails
+    over and fails again: a test of how a single provider's failure reaches the
+    client needs the one route."""
     data = yaml.safe_load(TEST_PROVIDERS.read_text())
     for p in data["providers"]:
         p["base_url"] = base_url
         p.update(provider_overrides)
+    if single_route:
+        for model in data["models"].values():
+            model["routes"] = model["routes"][:1]
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(data))
     return path
+
+
+class NoBreakers:
+    """Breakers that are never consulted: a plan for one provider, always closed."""
+
+    async def claim(self, provider: str, request_id: str) -> bool:
+        raise AssertionError("a closed breaker has no probe to claim")
+
+    def failed(self, provider: str, request_id: str) -> None:
+        pass
+
+    def probe_succeeded(self, provider: str, request_id: str) -> None:
+        pass
+
+    def release(self, provider: str, request_id: str) -> None:
+        pass
+
+    def success(self, provider: str) -> BreakerSuccess:
+        return BreakerSuccess(provider, 10_000)
+
+
+async def single_provider_plan(provider: Any, model: str = "gpt-4o-mini") -> RoutePlan:
+    """A request's route through `provider` alone, its first attempt begun."""
+    plan = RoutePlan(
+        [(provider, CLOSED)],
+        NoBreakers(),  # type: ignore[arg-type]
+        Metrics([model], [provider.name]),
+        "request",
+        None,
+    )
+    assert await plan.next() is provider
+    return plan
 
 
 def assert_internal_error_response(r: httpx.Response, caplog: pytest.LogCaptureFixture) -> None:

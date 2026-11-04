@@ -25,6 +25,7 @@ from tollgate.db.models import UsageEventRow
 from tollgate.observability.metrics import Observation
 from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter, Reservation
+from tollgate.routing.circuit_breaker import BreakerSuccess
 from tollgate.usage.pricing import ZERO, Pricing, micro_usd
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,8 @@ class UsageEvent:
     tenant_id: str
     api_key_id: str
     model: str
-    provider: str | None  # None if the request never got as far as routing
+    # None if the request never got as far as routing; with failover, the last provider tried.
+    provider: str | None
     status: UsageStatus
     prompt_tokens: int
     completion_tokens: int
@@ -55,6 +57,7 @@ class UsageEvent:
     latency_ms: int
     ttft_ms: int | None
     cost_usd: Decimal = ZERO
+    attempts: int = 1  # providers tried; 1 for a request turned away before any
 
 
 class Ledger(Protocol):
@@ -81,6 +84,7 @@ def postgres_writer(sessions: async_sessionmaker[AsyncSession]) -> WriteBatch:
                 "usage_estimated": e.usage_estimated,
                 "cost_usd": e.cost_usd,
                 "status": e.status,
+                "attempts": e.attempts,
                 "latency_ms": e.latency_ms,
                 "ttft_ms": e.ttft_ms,
             }
@@ -247,29 +251,41 @@ class Metering:
             return ZERO
         return self.pricing.cost_usd(model, prompt_tokens, completion_tokens)
 
-    def reconcile(self, reservation: Reservation | None, used: int, cost: Decimal = ZERO) -> None:
+    def reconcile(
+        self,
+        reservation: Reservation | None,
+        used: int,
+        cost: Decimal = ZERO,
+        success: BreakerSuccess | None = None,
+    ) -> None:
         """Settle a request once its usage is known: reconcile its TPM
-        reservation with the tokens actually used, and add its cost to its
-        tenant's spend. In the background: it is a second Redis call, and
-        needn't hold up a response. Counted as open, so shutdown waits for it."""
+        reservation with the tokens actually used, add its cost to its
+        tenant's spend, and count its `success` against its provider's
+        breaker. In the background: it is a second Redis call, and needn't
+        hold up a response. Counted as open, so shutdown waits for it."""
         if reservation is None or self.limiter is None:
             return
         self._opened()
         task = asyncio.create_task(
-            self._reconcile(self.limiter, reservation, used, micro_usd(cost))
+            self._reconcile(self.limiter, reservation, used, micro_usd(cost), success)
         )
         task.add_done_callback(self._closed)
 
     @staticmethod
     async def _reconcile(
-        limiter: RateLimiter, reservation: Reservation, used: int, cost_micro_usd: int
+        limiter: RateLimiter,
+        reservation: Reservation,
+        used: int,
+        cost_micro_usd: int,
+        success: BreakerSuccess | None,
     ) -> None:
         # Best effort: if Redis is down the bucket stays charged the whole
         # reservation, which only errs towards admitting less, and refill
         # clears it within a minute. The spend counter misses this cost until
-        # it is next refilled from the ledger, which has it.
+        # it is next refilled from the ledger, which has it; the breaker
+        # misses a success, which only errs towards opening sooner.
         try:
-            await limiter.settle(reservation, used, cost_micro_usd)
+            await limiter.settle(reservation, used, cost_micro_usd, success)
         except (RedisError, OSError, TimeoutError) as exc:
             log.warning("could not settle a request in Redis: %s", type(exc).__name__)
 
@@ -323,7 +339,13 @@ class Metering:
 class UsageMeter:
     """What is known about one request's usage. Wrap everything from the
     provider call on in measure(): whatever happens inside, exactly one usage
-    event is recorded on the way out."""
+    event is recorded on the way out.
+
+    With failover a request makes several attempts, one per provider tried
+    (begin_attempt), and its one event covers them all (SPEC 4): the last
+    attempt's usage, plus a prompt estimate for each earlier one that was sent
+    but never answered, which its provider may bill.
+    """
 
     def __init__(
         self,
@@ -356,7 +378,23 @@ class UsageMeter:
         self.first_token_at: float | None = None
         self.reservation: Reservation | None = None  # TPM tokens held, settled on record
         self.observation: Observation | None = None  # the request's metrics
+        # Called once the outcome is known, with the usage status: returns the
+        # success, if any, to count against the provider's breaker.
+        self.finish: Callable[[UsageStatus], BreakerSuccess | None] | None = None
+        self.attempts = 0
+        self._unanswered = 0  # earlier attempts sent, then never answered
         self._measured = False
+
+    def begin_attempt(self, provider: str) -> None:
+        """Start an attempt at `provider`. What is known so far was the attempt before's."""
+        if self.attempts and self.sent and self.reported is None:
+            self._unanswered += 1  # it may bill the prompt it was sent
+        self.attempts += 1
+        self.provider = provider
+        self.sent = False
+        self.reported = None
+        self.generated = ""
+        self.first_token_at = None
 
     def mark_sent(self) -> None:
         self.sent = True
@@ -389,18 +427,26 @@ class UsageMeter:
             await asyncio.shield(recording)
 
     async def _record(self) -> None:
+        # Leaving measure() without settling anything is itself a bug.
+        status: UsageStatus = self.status or "gateway_error"
+        success = self.finish(status) if self.finish is not None else None
         if self.observation is not None:
-            self.observation.settle(self.status or "gateway_error")
+            self.observation.settle(status)
             if self.first_token_at is not None:
                 self.observation.ttft_s = self.first_token_at - self.started_at
-        estimated = self.reported is None and self.sent
+        unreported = self.reported is None and self.sent
+        estimated_prompt = estimated_completion = 0
+        if unreported or self._unanswered:
+            # Off the event loop: a 1 MB prompt takes tiktoken a noticeable while.
+            estimated_prompt, estimated_completion = await anyio.to_thread.run_sync(self._estimate)
         if self.reported is not None:
             prompt, completion = self.reported
-        elif estimated:
-            # Off the event loop: a 1 MB prompt takes tiktoken a noticeable while.
-            prompt, completion = await anyio.to_thread.run_sync(self._estimate)
+        elif unreported:
+            prompt, completion = estimated_prompt, estimated_completion
         else:
             prompt = completion = 0  # never sent: nothing billed
+        prompt += self._unanswered * estimated_prompt
+        estimated = unreported or self._unanswered > 0
         cost = self._metering.cost_usd(self.model, prompt, completion)
         await self._metering.ledger.record(
             UsageEvent(
@@ -409,8 +455,7 @@ class UsageMeter:
                 api_key_id=self.api_key_id,
                 model=self.model,
                 provider=self.provider,
-                # Leaving measure() without settling anything is itself a bug.
-                status=self.status or "gateway_error",
+                status=status,
                 prompt_tokens=prompt,
                 completion_tokens=completion,
                 usage_estimated=estimated,
@@ -419,10 +464,11 @@ class UsageMeter:
                 if self.first_token_at is None
                 else _ms_since(self.started_at, self.first_token_at),
                 cost_usd=cost,
+                attempts=max(1, self.attempts),
             )
         )
         # After the event: the ledger is the record; Redis only follows it.
-        self._metering.reconcile(self.reservation, prompt + completion, cost)
+        self._metering.reconcile(self.reservation, prompt + completion, cost, success)
 
     def _estimate(self) -> tuple[int, int]:
         return (

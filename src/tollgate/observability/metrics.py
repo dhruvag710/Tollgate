@@ -25,6 +25,7 @@ from prometheus_client import (
 )
 
 from tollgate.db.models import USAGE_STATUSES
+from tollgate.routing.router import ATTEMPT_RESULTS
 
 # Codes of the errors that turn a chat request away before it has a usage event.
 ERROR_STATUSES = (
@@ -36,10 +37,12 @@ ERROR_STATUSES = (
     "body_too_large",
     "model_not_found",
     "unknown_model",
+    "no_provider_available",
     "internal_error",
 )
 STATUSES = frozenset((*USAGE_STATUSES, *ERROR_STATUSES))
 RATE_LIMITS = {"requests": "rpm", "tokens": "tpm", "too_large": "request_too_large"}
+BREAKER_STATES = frozenset({"closed", "open", "half_open"})
 OTHER, NONE = "other", "none"  # not in the set; not known (yet)
 
 CONTENT_TYPE = CONTENT_TYPE_LATEST
@@ -102,6 +105,20 @@ class Metrics:
             "Usage events recorded but not yet written to the ledger.",
             registry=registry,
         )
+        self.provider_attempts = Counter(
+            "tollgate_provider_attempts",
+            "Attempts at a provider, by result: one per provider a request tried, unless "
+            "the request ended (its client left) before the attempt had a result.",
+            ["provider", "result"],
+            registry=registry,
+        )
+        self.breaker_transitions = Counter(
+            "tollgate_breaker_transitions",
+            "Circuit breaker state changes this replica made, by the state entered. The "
+            "breakers are shared: sum over replicas for a provider's whole history.",
+            ["provider", "state"],
+            registry=registry,
+        )
 
     def watch_ledger(self, pending: Callable[[], int]) -> None:
         """Read the ledger's queue depth at each scrape."""
@@ -110,16 +127,29 @@ class Metrics:
     def rate_limited(self, outcome: str) -> None:
         self.ratelimit_rejections.labels(RATE_LIMITS.get(outcome, OTHER)).inc()
 
+    def attempt(self, provider: str, result: str) -> None:
+        self.provider_attempts.labels(
+            self._provider(provider), result if result in ATTEMPT_RESULTS else OTHER
+        ).inc()
+
+    def breaker_transition(self, provider: str, state: str) -> None:
+        self.breaker_transitions.labels(
+            self._provider(provider), state if state in BREAKER_STATES else OTHER
+        ).inc()
+
+    def _provider(self, provider: str | None) -> str:
+        if provider is None:
+            return NONE
+        return provider if provider in self._providers else OTHER
+
     def observe_request(
         self, observation: Observation, started_at: float, ended_at: float, upstream_s: float
     ) -> None:
         o = observation
         status = o.status if o.status in STATUSES else OTHER
         model = NONE if o.model is None else o.model if o.model in self._models else OTHER
-        provider = (
-            NONE if o.provider is None else o.provider if o.provider in self._providers else OTHER
-        )
-        self.requests.labels(status, model, provider, "MISS").inc()  # no cache until v2
+        # The provider that answered: with failover, the last one tried. No cache until v2.3.
+        self.requests.labels(status, model, self._provider(o.provider), "MISS").inc()
         self.duration.observe(ended_at - started_at)
         if upstream_s > 0 and o.response_started_at is not None:
             self.overhead.observe(max(0.0, o.response_started_at - started_at - upstream_s))
