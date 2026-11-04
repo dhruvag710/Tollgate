@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     redis_pool_timeout_s: float = 5.0
     # TPM tokens reserved for the completion of a request that sets no max_tokens.
     tpm_default_max_tokens: int = 1024
+    # The response cache (SPEC Phase 2.3): only requests at or below this
+    # temperature are cached; exact-match entries live this long, and larger
+    # ones aren't stored.
+    cache_max_temperature: float = Field(default=0.3, ge=0)
+    exact_cache_ttl_s: int = Field(default=86_400, ge=1)
+    exact_cache_max_entry_bytes: int = Field(default=262_144, ge=1)
     # The usage ledger's writer: a batch insert every interval or batch size,
     # whichever comes first, and how long shutdown waits for the last ones.
     ledger_batch_size: int = Field(default=200, ge=1)

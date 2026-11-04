@@ -5,13 +5,15 @@ import asyncio
 import contextlib
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import anyio
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
+from tollgate.cache import exact
+from tollgate.cache.replay import StreamAssembler, replay
 from tollgate.errors import (
     SHUTDOWN_MESSAGE,
     TollgateError,
@@ -85,6 +87,8 @@ class StreamTally:
         self.upstream_error = False  # upstream sent an error event
         self.first_token_at: float | None = None
         self._generated: list[str] = []
+        # Collects the completion, for the cache, when the request is cacheable.
+        self.assembler: StreamAssembler | None = None
 
     @property
     def generated(self) -> str:
@@ -106,6 +110,8 @@ class StreamTally:
         if isinstance(chunk.get("error"), dict):
             self.upstream_error = True
             return True
+        if self.assembler is not None:
+            self.assembler.feed(chunk)
         usage = parse_usage(chunk.get("usage"))
         if usage is not None:
             self.usage = usage
@@ -161,6 +167,8 @@ class SSEProxyResponse(Response):
         self._server_timing = server_timing
         self._extra_headers = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
         self._tally = StreamTally(forward_usage_chunk=forward_usage_chunk)
+        if meter.cache_key is not None:  # a cache miss: keep the answer
+            self._tally.assembler = StreamAssembler()
         self._upstream: UpstreamStream | None = None
         self._started = False  # http.response.start sent
         self._responded = False  # final message sent, or about to be
@@ -205,6 +213,11 @@ class SSEProxyResponse(Response):
             meter.reported = tally.usage
         meter.generated = tally.generated
         meter.first_token_at = tally.first_token_at
+        # Only a stream that reached [DONE] whole is worth caching.
+        if tally.assembler is not None and tally.done and not tally.upstream_error:
+            completion = tally.assembler.completion()
+            if exact.storable(completion):
+                meter.cache_completion = completion
 
     async def _end_started_stream(self, send: Send, message: str, code: str) -> None:
         """End a stream the client is already reading with an error event, as an
@@ -331,3 +344,43 @@ class SSEProxyResponse(Response):
     ) -> None:
         self._responded = True
         await response(scope, receive, send)
+
+
+class ReplayResponse(Response):
+    """A streamed request answered from the cache: the cached completion
+    replayed as SSE (SPEC Phase 2.3). `record` records its usage event once
+    the replay has been sent, or the client has gone, with the time its first
+    token went out."""
+
+    def __init__(
+        self,
+        completion: dict[str, Any],
+        *,
+        include_usage: bool,
+        record: Callable[..., Awaitable[None]],
+        headers: dict[str, str],
+    ) -> None:
+        super().__init__()
+        self._replay = replay(completion, include_usage=include_usage)
+        self._record = record
+        self._extra_headers = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        first_token_at: float | None = None
+        events = self._replay.events
+        try:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [*SSE_HEADERS, *self._extra_headers],
+                }
+            )
+            for i, event in enumerate(events):
+                more = i < len(events) - 1
+                await send({"type": "http.response.body", "body": event, "more_body": more})
+                if i == self._replay.first_token:
+                    first_token_at = time.perf_counter()
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self._record(first_token_at=first_token_at)

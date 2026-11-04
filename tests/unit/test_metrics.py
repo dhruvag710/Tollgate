@@ -17,10 +17,24 @@ def test_a_request_is_counted_under_its_labels() -> None:
     m = metrics()
     o = Observation(model="gpt-4o-mini", provider="mock", status="success")
     m.observe_request(o, started_at=10.0, ended_at=10.5, upstream_s=0.0)
-    labels = {"status": "success", "model": "gpt-4o-mini", "provider": "mock", "cache": "MISS"}
+    # The cache wasn't consulted for it: BYPASS.
+    labels = {"status": "success", "model": "gpt-4o-mini", "provider": "mock", "cache": "BYPASS"}
     assert value(m, "tollgate_requests_total", **labels) == 1
     assert value(m, "tollgate_request_duration_seconds_count") == 1
     assert value(m, "tollgate_request_duration_seconds_sum") == 0.5
+
+
+def test_a_request_is_counted_under_its_cache_status() -> None:
+    m = metrics()
+    for cache, provider in (("MISS", "mock"), ("HIT", None), ("made-up", "mock")):
+        o = Observation(model="gpt-4o-mini", provider=provider, status="success", cache=cache)
+        m.observe_request(o, 0.0, 1.0, 0.0)
+    miss = {"status": "success", "model": "gpt-4o-mini", "provider": "mock", "cache": "MISS"}
+    assert value(m, "tollgate_requests_total", **miss) == 1
+    # A hit reached no provider.
+    hit = {**miss, "provider": "none", "cache": "HIT"}
+    assert value(m, "tollgate_requests_total", **hit) == 1
+    assert value(m, "tollgate_requests_total", **{**miss, "cache": "other"}) == 1
 
 
 def test_label_values_outside_the_fixed_sets_are_other() -> None:
@@ -29,10 +43,10 @@ def test_label_values_outside_the_fixed_sets_are_other() -> None:
     m.observe_request(made_up, 0.0, 1.0, 0.0)
     m.observe_request(Observation(status=None), 0.0, 1.0, 0.0)  # nothing settled it
     m.observe_request(Observation(status="missing_api_key"), 0.0, 1.0, 0.0)
-    other = {"status": "other", "model": "other", "provider": "other", "cache": "MISS"}
+    other = {"status": "other", "model": "other", "provider": "other", "cache": "BYPASS"}
     assert value(m, "tollgate_requests_total", **other) == 1
     # Not known at all (turned away before the body was read) is "none".
-    unread = {"status": "other", "model": "none", "provider": "none", "cache": "MISS"}
+    unread = {"status": "other", "model": "none", "provider": "none", "cache": "BYPASS"}
     assert value(m, "tollgate_requests_total", **unread) == 1
     unread["status"] = "missing_api_key"
     assert value(m, "tollgate_requests_total", **unread) == 1

@@ -1,5 +1,6 @@
 """POST /v1/chat/completions: streaming and non-streaming passthrough, with
-failover across the model's providers (SPEC Phase 2.1)."""
+failover across the model's providers (SPEC Phase 2.1) and answers from the
+exact-match cache (Phase 2.3)."""
 
 import json
 from functools import partial
@@ -12,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.auth.cache import KeyCache
+from tollgate.auth.context import TenantContext
 from tollgate.auth.dependency import authenticate, presented_key
+from tollgate.cache import exact, policy
+from tollgate.cache.replay import fresh
 from tollgate.config import Settings
 from tollgate.deps import (
     get_budgets,
@@ -39,9 +43,9 @@ from tollgate.routing.router import (
     model_not_found,
     status_result,
 )
-from tollgate.streaming.sse import SSEProxyResponse
+from tollgate.streaming.sse import ReplayResponse, SSEProxyResponse
 from tollgate.usage.budget import Budgets
-from tollgate.usage.ledger import Metering, UsageMeter, parse_usage
+from tollgate.usage.ledger import CacheStatus, Metering, UsageMeter, parse_usage
 
 router = APIRouter()
 
@@ -138,7 +142,18 @@ async def chat_completions(
             reserve = estimate()
         else:
             reserve = await anyio.to_thread.run_sync(estimate)
-    # The same call reads the breakers of the model's providers, for routing.
+    # The exact-cache key of a request the cacheability policy allows; the
+    # tenant's own setting is checked in the admission call. Hashing a large
+    # body, like estimating it, is done off the event loop.
+    cache_key = ""
+    if policy.cacheable(body, request.headers, settings.cache_max_temperature):
+        with timings.stage("cache-key"):
+            if size <= INLINE_ESTIMATE_MAX_BYTES:
+                cache_key = policy.exact_key(body)
+            else:
+                cache_key = await anyio.to_thread.run_sync(policy.exact_key, body)
+    # The same call reads the breakers of the model's providers, for routing,
+    # and the request's exact-cache entry.
     tenant, limits = await authenticate(
         request,
         raw_key,
@@ -149,6 +164,7 @@ async def chat_completions(
         budgets=budgets,
         reservation=reserve,
         routes=router_.routes(req.model),
+        cache_key=cache_key,
     )
     assert limits is not None  # asked for with a reservation
     if not limits.allowed:
@@ -166,21 +182,27 @@ async def chat_completions(
         raise limits.error()
 
     reservation = Reservation(tenant.tenant_id, tenant.tpm_limit, limits.reserved)
-    try:
-        if not tenant.allows(req.model):
-            raise model_not_found(req.model)
-        plan = router_.plan(
-            req.model,
-            limits.breakers,
-            request_id=request.state.request_id,
-            observation=observation,
+    if not tenant.allows(req.model) or not router_.routes(req.model):
+        metering.release(reservation)  # never reached a provider: no usage event
+        raise model_not_found(req.model)  # even if an old cache entry has it
+
+    consulted = bool(cache_key) and tenant.cache_enabled
+    cached = exact.decode(limits.cached) if consulted and limits.cached else None
+    if cached is not None:
+        observation.cache = "HIT"
+        return await _answer_from_cache(
+            request, req, tenant, cached, metering, reservation, observation, limits.headers()
         )
-        provider = await plan.next()
-        if provider is None:
-            raise plan.unavailable()  # never reached a provider: no usage event
-    except TollgateError:
-        metering.release(reservation)
-        raise
+    cache_status: CacheStatus = "MISS" if consulted else "BYPASS"
+    observation.cache = cache_status
+
+    plan = router_.plan(
+        req.model, limits.breakers, request_id=request.state.request_id, observation=observation
+    )
+    provider = await plan.next()
+    if provider is None:
+        metering.release(reservation)  # never reached a provider: no usage event
+        raise plan.unavailable()
     meter = metering.meter(
         request_id=request.state.request_id,
         tenant_id=tenant.tenant_id,
@@ -193,7 +215,10 @@ async def chat_completions(
         observation=observation,
     )
     meter.finish = plan.finish
-    headers = limits.headers()
+    meter.cache_status = cache_status
+    if consulted:
+        meter.cache_key = cache_key  # a miss: store the answer, once complete
+    headers = {**limits.headers(), "X-Tollgate-Cache": cache_status}
     if not req.stream:
         async with meter.measure():
             return await _complete(
@@ -260,9 +285,46 @@ async def _complete(
         for c in (choices if isinstance(choices, list) else [])
         if isinstance(c, dict)
     )
+    if meter.cache_key is not None and exact.storable(upstream.body):
+        meter.cache_completion = upstream.body
     headers = {**extra_headers, "X-Tollgate-Provider": provider.name}
     if server_timing:
         headers["Server-Timing"] = timings.server_timing()
     response = JSONResponse(upstream.body, status_code=upstream.status_code, headers=headers)
     meter.settle("success")
+    return response
+
+
+async def _answer_from_cache(
+    request: Request,
+    req: ChatCompletionRequest,
+    tenant: TenantContext,
+    cached: dict[str, Any],
+    metering: Metering,
+    reservation: Reservation,
+    observation: Observation,
+    limit_headers: dict[str, str],
+) -> Response:
+    """A cache hit: the cached completion, as JSON or replayed as a stream. It
+    reached no provider, so it records a HIT event of its own: nothing billed,
+    its TPM reservation given back (SPEC Phase 2.3)."""
+    headers = {**limit_headers, "X-Tollgate-Cache": "HIT"}
+    usage = parse_usage(cached.get("usage"))
+    assert usage is not None, "only completions with usage are cached"
+    record = partial(
+        metering.record_hit,
+        request_id=request.state.request_id,
+        tenant_id=tenant.tenant_id,
+        api_key_id=tenant.api_key_id,
+        started_at=request.state.started_at,
+        model=req.model,
+        usage=usage,
+        reservation=reservation,
+        observation=observation,
+    )
+    if req.stream:
+        include_usage = bool((req.stream_options or {}).get("include_usage"))
+        return ReplayResponse(cached, include_usage=include_usage, record=record, headers=headers)
+    response = JSONResponse(fresh(cached), headers=headers)
+    await record()
     return response

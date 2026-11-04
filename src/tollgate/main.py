@@ -111,7 +111,12 @@ def create_app(
         ledger = writer = UsageWriter(
             batch_size=settings.ledger_batch_size, interval_s=settings.ledger_flush_interval_s
         )
-    metering = Metering(ledger, Pricing.from_config(providers_file))
+    metering = Metering(
+        ledger,
+        Pricing.from_config(providers_file),
+        cache_ttl_s=settings.exact_cache_ttl_s,
+        cache_max_entry_bytes=settings.exact_cache_max_entry_bytes,
+    )
     metrics = Metrics(providers_file.models, (p.name for p in providers_file.providers))
     if writer is not None:
         metrics.watch_ledger(lambda: writer.pending)

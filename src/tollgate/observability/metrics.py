@@ -24,7 +24,7 @@ from prometheus_client import (
     generate_latest,
 )
 
-from tollgate.db.models import USAGE_STATUSES
+from tollgate.db.models import CACHE_STATUSES, USAGE_STATUSES
 from tollgate.routing.router import ATTEMPT_RESULTS
 
 # Codes of the errors that turn a chat request away before it has a usage event.
@@ -55,6 +55,8 @@ class Observation:
     model: str | None = None
     provider: str | None = None
     status: str | None = None  # the first one set wins
+    # HIT, MISS or BYPASS (SPEC Phase 2.3): BYPASS until the cache is consulted.
+    cache: str = "BYPASS"
     ttft_s: float | None = None
     response_started_at: float | None = None  # time.perf_counter() at the response's start
 
@@ -148,8 +150,9 @@ class Metrics:
         o = observation
         status = o.status if o.status in STATUSES else OTHER
         model = NONE if o.model is None else o.model if o.model in self._models else OTHER
-        # The provider that answered: with failover, the last one tried. No cache until v2.3.
-        self.requests.labels(status, model, self._provider(o.provider), "MISS").inc()
+        # The provider that answered: with failover, the last one tried.
+        cache = o.cache if o.cache in CACHE_STATUSES else OTHER
+        self.requests.labels(status, model, self._provider(o.provider), cache).inc()
         self.duration.observe(ended_at - started_at)
         if upstream_s > 0 and o.response_started_at is not None:
             self.overhead.observe(max(0.0, o.response_started_at - started_at - upstream_s))

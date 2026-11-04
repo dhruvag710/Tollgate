@@ -7,7 +7,8 @@ changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 chat completions, the mock provider, tenants with API keys, per-tenant rate limits, a
 usage ledger in Postgres with monthly budgets, Prometheus metrics and JSON logs, and a
 three-replica setup behind nginx. Benchmarks: [BENCHMARKS.md](BENCHMARKS.md). v2 adds
-provider failover with circuit breakers shared by every replica (Phase 2.1).
+provider failover with circuit breakers shared by every replica (Phase 2.1) and an
+exact-match response cache (Phase 2.3).
 
 ## Architecture
 
@@ -25,7 +26,7 @@ provider failover with circuit breakers shared by every replica (Phase 2.1).
     │  │                  (OpenAI, OpenRouter, Ollama) via config/providers.yaml
     │  └────►  Postgres   tenants, API keys, the usage ledger (batched inserts)
     └───────►  Redis      key cache, budget check, RPM and TPM buckets, month-to-date
-                          spend, the providers' circuit breakers
+                          spend, the providers' circuit breakers, cached answers
 ```
 
 A chat request, with a cached key, makes one Redis call before the provider: a Lua
@@ -62,6 +63,22 @@ the providers file, and per provider. If every route is open the request gets a 
 `Retry-After`. Routing costs no Redis call of its own: the admission call already reads
 the breakers, and the settle call each request makes counts its success.
 `GET /admin/providers` shows each breaker's state.
+
+### Exact-match cache
+
+A request whose answer shouldn't vary can be answered from Redis: temperature at most
+0.3 (`CACHE_MAX_TEMPERATURE`; a request without one runs at the provider's default, 1, so
+is never cached), one choice, no tools, the tenant's `cache_enabled` set, and no
+`X-Tollgate-Cache: bypass` header. The key is every parameter that can change the answer:
+change any of them, even one Tollgate doesn't know, and it misses. Each tenant's entries are
+its own. Only complete answers are kept, for 24 h by default (`EXACT_CACHE_TTL_S`), and a
+plain answer serves streamed requests too, replayed as SSE, and the other way round.
+
+A hit is admitted like any request, budget and rate limits included, but costs nothing
+beyond its RPM slot: its token reservation is refunded, nothing is billed, and its usage
+event records `cache_status = HIT` and what the answer would have cost (`saved_cost_usd`).
+Responses say `X-Tollgate-Cache: HIT`, `MISS` or `BYPASS`. The cache adds no Redis call:
+the admission call reads the entry, and the settle call stores one.
 
 ### Usage
 

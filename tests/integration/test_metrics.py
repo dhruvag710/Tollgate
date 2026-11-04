@@ -27,8 +27,11 @@ def samples(text: str) -> dict[tuple[str, frozenset[tuple[str, str]]], float]:
     }
 
 
-def requests(status: str, model: str = "gpt-4o-mini", provider: str = "mock") -> Any:
-    labels = {"status": status, "model": model, "provider": provider, "cache": "MISS"}
+def requests(
+    status: str, model: str = "gpt-4o-mini", provider: str = "mock", cache: str = "BYPASS"
+) -> Any:
+    # BYPASS: these requests set no temperature, so the cache isn't consulted.
+    labels = {"status": status, "model": model, "provider": provider, "cache": cache}
     return ("tollgate_requests_total", frozenset(labels.items()))
 
 

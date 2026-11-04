@@ -38,14 +38,19 @@ FAIL_500 = {"fail_rate": 1, "fail_mode": "500"}
 
 
 def providers_config(
-    tmp_path: Path, primary: str, secondary: str, **primary_overrides: Any
+    tmp_path: Path,
+    primary: str,
+    secondary: str,
+    *,
+    secondary_overrides: dict[str, Any] | None = None,
+    **primary_overrides: Any,
 ) -> Path:
     config = {
         "providers": [
             {"name": "mock", "type": "openai_compat", "base_url": f"{primary}/v1",
              "forward_mock_headers": True, **primary_overrides},
             {"name": "mock-secondary", "type": "openai_compat", "base_url": f"{secondary}/v1",
-             "forward_mock_headers": True},
+             "forward_mock_headers": True, **(secondary_overrides or {})},
         ],
         "models": {
             "gpt-4o-mini": {"routes": ["mock", "mock-secondary"],
@@ -326,6 +331,44 @@ async def test_when_every_provider_is_unreachable_the_last_error_is_returned(
     event = g.last()
     assert (event.attempts, event.status) == (2, "provider_error")
     assert (event.prompt_tokens, event.usage_estimated) == (0, False)  # never sent
+
+
+@pytest.mark.parametrize(
+    ("stream", "slow"),
+    [(False, {"latency_ms": 3000}), (True, {"ttft_ms": 3000})],
+    ids=["plain", "streamed"],
+)
+async def test_when_every_provider_times_out_the_last_timeout_is_returned(
+    tmp_path: Path, mocks: tuple[Mock, Mock], stream: bool, slow: dict[str, int]
+) -> None:
+    primary, secondary = mocks
+    for mock in mocks:
+        await mock.behave(**slow)
+    fast = {"first_byte_timeout_s": 0.3}
+    config = providers_config(
+        tmp_path, primary.url, secondary.url, secondary_overrides=fast, **fast
+    )
+    async with gateway(config) as g:
+        started = time.perf_counter()
+        r = await g.chat(stream=stream)
+        took = time.perf_counter() - started
+        # Both timeouts count against their breakers.
+        breakers = [await g.breaker(p) for p in ("mock", "mock-secondary")]
+    assert [b["failures"] for b in breakers] == [1, 1]
+    assert r.status_code == 504, r.text
+    assert r.json()["error"]["code"] == "upstream_timeout"
+    assert r.headers["x-tollgate-provider"] == "mock-secondary"
+    assert took < 2.5  # one first-byte timeout each, not the mocks' 3 s
+    event = g.last()
+    assert (event.attempts, event.status, event.provider) == (2, "provider_error", "mock-secondary")
+    # Both were sent the prompt and never answered: each may bill it, and the
+    # one event carries both estimates, which match what each mock counted.
+    prompt = estimate_prompt_tokens(MESSAGES, "gpt-4o-mini")
+    assert (event.prompt_tokens, event.completion_tokens) == (2 * prompt, 0)
+    assert event.usage_estimated
+    for mock in mocks:
+        assert wait_until(lambda m=mock: m.stats.partial_prompt_tokens == prompt)  # type: ignore[misc]
+        assert mock.stats.completed == 0
 
 
 # --- what doesn't ------------------------------------------------------------------------

@@ -159,7 +159,7 @@ client
 [3] Budget check: month-to-date spend < monthly budget          (v1)
 [4] Rate limit (one Lua call): RPM token bucket + TPM reservation
         └─ reject -> 429 + Retry-After + X-RateLimit-* headers
-[5] Cache lookup (v2): exact layer, then semantic layer
+[5] Cache lookup (v2): exact layer (read in [4]'s Lua call), then semantic layer
         └─ HIT -> return cached response (replayed as SSE if stream=true)
 [6] Route: pick provider by model + priority, skip OPEN breakers (v2)
 [7] Call provider; stream chunks straight through
@@ -268,7 +268,7 @@ CREATE INDEX ON cache_entries (tenant_id, scope_hash);
 | `tg:rl:sw:{tenant_id}` | zset | sliding window log (v2 comparison) | window |
 | `tg:spend:{tenant_id}:{yyyymm}` | string (int) | month-to-date spend in micro-dollars; month in UTC by Redis time; refilled from the ledger when missing | 40 days |
 | `tg:cb:{provider}` | hash `{state, window_start, requests, failures, prev_requests, prev_failures, open_until, probe, probe_until}` | circuit breaker (v2): the current and previous windows' counts estimate a sliding window; times in ms, Redis time | none |
-| `tg:exact:{tenant_id}:{hash}` | string | exact-match cache (v2) | entry TTL |
+| `tg:exact:{tenant_id}:{hash}` | string | exact-match cache (v2): the cached completion's JSON | `EXACT_CACHE_TTL_S` (24 h) |
 | `tg:usage` | stream | usage events (v2) | trimmed by MAXLEN |
 
 **Key cache invalidation uses generations, not deletes.** Deleting a tenant's entries on a change would race: a lookup that read Postgres just before a revoke could write its stale entry back just after the delete, and the revoked key would keep working until the entry expired. Instead, a change bumps `tg:tenant_gen`, which makes every entry built before it stop counting at once, on every replica. A lookup reads the generation before it queries Postgres and refills the cache only if the generation hasn't moved since. A key's first two requests read Postgres: the first only learns its tenant.
@@ -409,11 +409,17 @@ Prices are config values. Verify them against provider pricing pages before repo
 - ✅ Accept: kill the consumer mid-load-test, restart it, and the ledger still matches mock counters exactly (zero lost, zero duplicated)
 
 **Phase 2.3: Exact-match cache**
-- Cache key = hash of (tenant, model, full messages, temperature, max_tokens, tools)
+- Cache key = hash of (tenant, model, full messages, temperature, max_tokens, tools), and of every other request parameter that can change the answer: the SHA-256 of the canonical request body without `stream`, `stream_options` and `user`, under the tenant's own Redis key (`tg:exact:{tenant_id}:{hash}`)
+- Only requests the cacheability policy allows (`policy.py`, Phase 2.4; it governs both layers) are looked up or stored; the rest are `BYPASS`
+- The lookup runs inside the admission call (§4), so a hit costs no Redis round trip of its own; storing rides the settle call the request makes anyway
+- Only complete successes are stored: a response with a finish reason, or a stream that reached `[DONE]`, with the provider's usage, up to `EXACT_CACHE_MAX_ENTRY_BYTES`, for `EXACT_CACHE_TTL_S` (default 24 h). Never errors or broken streams.
+- Streamed and non-streamed requests share entries: a streamed request is answered by replaying the cached completion as SSE chunks (`replay.py`), a plain one as JSON
+- A hit is free beyond RPM: it is admitted (budget, then rate limits) like any request, then its TPM reservation is refunded in full and nothing is added to spend. Its usage event: `success`, `cache_status = HIT`, zero tokens and cost, `saved_cost_usd` = the cached answer's usage at current prices, no provider, `attempts = 0`
+- Usage events record `MISS` for a request the cache was consulted for, `BYPASS` for any other (including requests turned away before the lookup)
 - ✅ Accept: identical requests hit; changing any param misses
 
 **Phase 2.4: Semantic cache**
-- **Cacheability policy** (`policy.py`): only when `temperature <= 0.3` (configurable), no tools/function calls, tenant has cache enabled, and the client didn't send `X-Tollgate-Cache: bypass`
+- **Cacheability policy** (`policy.py`, built in Phase 2.3 and governing both layers): only when `temperature <= 0.3` (configurable; a request without one runs at the provider's default, 1, so is never cached), `n` is 1, no tools/function calls (none offered, none in the conversation), tenant has cache enabled, and the client didn't send `X-Tollgate-Cache: bypass`
 - **Scope:** `scope_hash` = hash(model, system prompt, all messages except the last user message, params). Only the **last user message** is embedded. Entries only match within the same scope and tenant. This prevents "same question, different conversation" false hits.
 - Lookup: top-1 by cosine similarity within scope; hit if `similarity >= threshold`
 - Threshold is chosen from the cache evaluation (section 9, B4), not by vibes

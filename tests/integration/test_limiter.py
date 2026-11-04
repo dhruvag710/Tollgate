@@ -112,14 +112,16 @@ def test_no_script_takes_the_time_from_the_app() -> None:
 
     check, settle = code(limiter_module._CHECK), code(limiter_module._SETTLE)
     # The check's arguments: the tenant, its budget and limits, the tokens
-    # involved, then the names of the providers whose breakers it reads, on
-    # Redis's clock.
-    assert "ARGV[6]" not in check
-    assert "breaker_views(ARGV, 6, breaker_now_ms())" in check
-    # The settle call's: the tenant, its TPM limit, tokens and cost, then the
-    # provider to count a success for and its breaker's window: a length of
-    # time, not a time. Nothing after.
-    assert "ARGV[6]" in settle and "ARGV[7]" not in settle
+    # involved, the request's exact-cache key, then the names of the providers
+    # whose breakers it reads, on Redis's clock.
+    assert "exact_get(ARGV[1], ARGV[6])" in check and "ARGV[7]" not in check
+    assert "breaker_views(ARGV, 7, breaker_now_ms())" in check
+    # The settle call's: the tenant, its TPM limit, tokens and cost, the
+    # provider to count a success for and its breaker's window (a length of
+    # time, not a time), then an answer to cache, its key and its lifetime in
+    # seconds (again a length). Nothing after.
+    assert "ARGV[9]" in settle and "ARGV[10]" not in settle
+    assert "exact_put(ARGV[1], ARGV[7], ARGV[8], tonumber(ARGV[9]))" in settle
     # Every time the library works with comes from Redis: the functions that
     # take one are handed now_seconds() or breaker_now_ms(), never an argument.
     for script in (check, settle):

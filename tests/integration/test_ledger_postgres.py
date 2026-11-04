@@ -76,7 +76,8 @@ async def test_each_request_is_one_row_with_its_cost() -> None:
     assert (success.prompt_tokens, success.completion_tokens) == (PROMPT, 10)
     assert success.cost_usd == PRICING.cost_usd(MODEL, PROMPT, 10)
     assert not success.usage_estimated
-    assert (success.cache_status, success.attempts, success.saved_cost_usd) == ("MISS", 1, 0)
+    # No temperature, so not cacheable: the cache was never consulted.
+    assert (success.cache_status, success.attempts, success.saved_cost_usd) == ("BYPASS", 1, 0)
     assert success.latency_ms is not None and success.ttft_ms is None
     assert stream.status == "success" and stream.ttft_ms is not None
     assert (stream.prompt_tokens, stream.completion_tokens) == (PROMPT, 10)

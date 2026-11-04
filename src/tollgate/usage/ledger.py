@@ -21,12 +21,16 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tollgate.cache.exact import CacheStore, encode
 from tollgate.db.models import UsageEventRow
 from tollgate.observability.metrics import Observation
 from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter, Reservation
 from tollgate.routing.circuit_breaker import BreakerSuccess
 from tollgate.usage.pricing import ZERO, Pricing, micro_usd
+
+# Re-exported: where callers have always found it.
+from tollgate.usage.reported import parse_usage as parse_usage
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +43,9 @@ UsageStatus = Literal[
     "rate_limited",
     "budget_exceeded",
 ]
+# HIT: answered from the cache; MISS: the cache was consulted, and the request
+# went to a provider; BYPASS: the cache wasn't consulted (SPEC Phase 2.3).
+CacheStatus = Literal["HIT", "MISS", "BYPASS"]
 
 
 @dataclass(frozen=True)
@@ -57,7 +64,9 @@ class UsageEvent:
     latency_ms: int
     ttft_ms: int | None
     cost_usd: Decimal = ZERO
-    attempts: int = 1  # providers tried; 1 for a request turned away before any
+    attempts: int = 1  # providers tried; 1 for a request turned away before any, 0 for a hit
+    cache_status: CacheStatus = "BYPASS"
+    saved_cost_usd: Decimal = ZERO  # a hit: what the provider would have charged
 
 
 class Ledger(Protocol):
@@ -85,6 +94,8 @@ def postgres_writer(sessions: async_sessionmaker[AsyncSession]) -> WriteBatch:
                 "cost_usd": e.cost_usd,
                 "status": e.status,
                 "attempts": e.attempts,
+                "cache_status": e.cache_status,
+                "saved_cost_usd": e.saved_cost_usd,
                 "latency_ms": e.latency_ms,
                 "ttft_ms": e.ttft_ms,
             }
@@ -197,16 +208,6 @@ class UsageWriter:
                 await asyncio.sleep(self._retry_s)
 
 
-def parse_usage(usage: Any) -> tuple[int, int] | None:
-    """(prompt_tokens, completion_tokens) from a provider's usage object, if well-formed."""
-    if not isinstance(usage, dict):
-        return None
-    prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
-    if type(prompt) is not int or type(completion) is not int:
-        return None
-    return prompt, completion
-
-
 class Metering:
     """Hands out one UsageMeter per request and counts those still measuring.
 
@@ -216,10 +217,20 @@ class Metering:
     for wait_idle() first, so cut-off requests still record their usage.
     """
 
-    def __init__(self, ledger: Ledger, pricing: Pricing | None = None) -> None:
+    def __init__(
+        self,
+        ledger: Ledger,
+        pricing: Pricing | None = None,
+        *,
+        cache_ttl_s: int = 86_400,
+        cache_max_entry_bytes: int = 262_144,
+    ) -> None:
         self.ledger = ledger
         # Without prices every request costs nothing (tests that don't need costs).
         self.pricing = pricing
+        # Answers stored in the exact cache: how long for, and the largest.
+        self.cache_ttl_s = cache_ttl_s
+        self.cache_max_entry_bytes = cache_max_entry_bytes
         # Settles requests (TPM and spend) as usage is recorded. Set once Redis is up.
         self.limiter: RateLimiter | None = None
         self._open = 0  # meters measuring, or still recording their event
@@ -257,17 +268,19 @@ class Metering:
         used: int,
         cost: Decimal = ZERO,
         success: BreakerSuccess | None = None,
+        store: CacheStore | None = None,
     ) -> None:
         """Settle a request once its usage is known: reconcile its TPM
         reservation with the tokens actually used, add its cost to its
-        tenant's spend, and count its `success` against its provider's
-        breaker. In the background: it is a second Redis call, and needn't
-        hold up a response. Counted as open, so shutdown waits for it."""
+        tenant's spend, count its `success` against its provider's breaker,
+        and `store` its answer in the exact cache. In the background: it is a
+        second Redis call, and needn't hold up a response. Counted as open,
+        so shutdown waits for it."""
         if reservation is None or self.limiter is None:
             return
         self._opened()
         task = asyncio.create_task(
-            self._reconcile(self.limiter, reservation, used, micro_usd(cost), success)
+            self._reconcile(self.limiter, reservation, used, micro_usd(cost), success, store)
         )
         task.add_done_callback(self._closed)
 
@@ -278,14 +291,16 @@ class Metering:
         used: int,
         cost_micro_usd: int,
         success: BreakerSuccess | None,
+        store: CacheStore | None,
     ) -> None:
         # Best effort: if Redis is down the bucket stays charged the whole
         # reservation, which only errs towards admitting less, and refill
         # clears it within a minute. The spend counter misses this cost until
         # it is next refilled from the ledger, which has it; the breaker
-        # misses a success, which only errs towards opening sooner.
+        # misses a success, which only errs towards opening sooner; the cache
+        # misses an answer, which the next identical request fetches again.
         try:
-            await limiter.settle(reservation, used, cost_micro_usd, success)
+            await limiter.settle(reservation, used, cost_micro_usd, success, store)
         except (RedisError, OSError, TimeoutError) as exc:
             log.warning("could not settle a request in Redis: %s", type(exc).__name__)
 
@@ -304,7 +319,8 @@ class Metering:
         status: UsageStatus,
         observation: Observation | None = None,
     ) -> None:
-        """The usage event of a request turned away before any provider: no tokens."""
+        """The usage event of a request turned away before any provider (or
+        the cache): no tokens."""
         if observation is not None:
             observation.settle(status)
         await self.ledger.record(
@@ -322,6 +338,46 @@ class Metering:
                 ttft_ms=None,
             )
         )
+
+    async def record_hit(
+        self,
+        *,
+        request_id: str,
+        tenant_id: str,
+        api_key_id: str,
+        started_at: float,
+        model: str,
+        usage: tuple[int, int],
+        first_token_at: float | None = None,
+        reservation: Reservation | None = None,
+        observation: Observation | None = None,
+    ) -> None:
+        """The usage event of a request answered from the cache: nothing billed,
+        nothing spent, its TPM reservation given back in full (SPEC Phase 2.3).
+        It records what the cached answer, `usage`, would have cost."""
+        if observation is not None:
+            observation.settle("success")
+            if first_token_at is not None:
+                observation.ttft_s = first_token_at - started_at
+        await self.ledger.record(
+            UsageEvent(
+                request_id=request_id,
+                tenant_id=tenant_id,
+                api_key_id=api_key_id,
+                model=model,
+                provider=None,
+                status="success",
+                prompt_tokens=0,
+                completion_tokens=0,
+                usage_estimated=False,
+                latency_ms=_ms_since(started_at, time.perf_counter()),
+                ttft_ms=None if first_token_at is None else _ms_since(started_at, first_token_at),
+                attempts=0,
+                cache_status="HIT",
+                saved_cost_usd=self.cost_usd(model, *usage),
+            )
+        )
+        self.release(reservation)
 
     def _opened(self) -> None:
         self._open += 1
@@ -381,6 +437,11 @@ class UsageMeter:
         # Called once the outcome is known, with the usage status: returns the
         # success, if any, to count against the provider's breaker.
         self.finish: Callable[[UsageStatus], BreakerSuccess | None] | None = None
+        self.cache_status: CacheStatus = "BYPASS"
+        # A MISS: the request's exact-cache key, and the answer to store under
+        # it, set once the response is complete.
+        self.cache_key: str | None = None
+        self.cache_completion: dict[str, Any] | None = None
         self.attempts = 0
         self._unanswered = 0  # earlier attempts sent, then never answered
         self._measured = False
@@ -448,6 +509,20 @@ class UsageMeter:
         prompt += self._unanswered * estimated_prompt
         estimated = unreported or self._unanswered > 0
         cost = self._metering.cost_usd(self.model, prompt, completion)
+        store = None
+        if (
+            self.cache_key
+            and self.cache_completion is not None
+            and status == "success"
+            and not estimated
+        ):
+            # Off the response path, like the rest of this.
+            store = encode(
+                self.cache_completion,
+                self.cache_key,
+                self._metering.cache_ttl_s,
+                self._metering.cache_max_entry_bytes,
+            )
         await self._metering.ledger.record(
             UsageEvent(
                 request_id=self.request_id,
@@ -465,10 +540,11 @@ class UsageMeter:
                 else _ms_since(self.started_at, self.first_token_at),
                 cost_usd=cost,
                 attempts=max(1, self.attempts),
+                cache_status=self.cache_status,
             )
         )
         # After the event: the ledger is the record; Redis only follows it.
-        self._metering.reconcile(self.reservation, prompt + completion, cost, success)
+        self._metering.reconcile(self.reservation, prompt + completion, cost, success, store)
 
     def _estimate(self) -> tuple[int, int]:
         return (

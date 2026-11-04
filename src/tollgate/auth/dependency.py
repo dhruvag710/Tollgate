@@ -86,14 +86,16 @@ async def authenticate(
     budgets: Budgets | None = None,
     reservation: int | None = None,
     routes: Sequence[str] = (),
+    cache_key: str = "",
 ) -> tuple[TenantContext, Decision | None]:
     """The key's tenant, and with a TPM `reservation` (and `budgets`) the
-    admission decision, carrying the breakers of the providers in `routes`:
-    from the same Redis call when the key is cached, one more call after a
-    miss, and a refill when the month's spend counter is missing."""
+    admission decision, carrying the breakers of the providers in `routes`
+    and, if the tenant has the cache enabled, the exact-cache entry under
+    `cache_key`: from the same Redis call when the key is cached, one more
+    call after a miss, and a refill when the month's spend counter is missing."""
     with request.state.timings.stage("auth"):
         return await _authenticate(
-            raw_key, settings, sessions, cache, limiter, budgets, reservation, routes
+            raw_key, settings, sessions, cache, limiter, budgets, reservation, routes, cache_key
         )
 
 
@@ -106,13 +108,14 @@ async def _authenticate(
     budgets: Budgets | None,
     reservation: int | None,
     routes: Sequence[str],
+    cache_key: str,
 ) -> tuple[TenantContext, Decision | None]:
     key_hash = keys.hash_key(raw_key, settings.key_pepper.get_secret_value())
     try:
-        context, limits = await _resolve(key_hash, sessions, cache, reservation, routes)
+        context, limits = await _resolve(key_hash, sessions, cache, reservation, routes, cache_key)
         if context is not None and reservation is not None:
             assert budgets is not None, "admitting a request needs budgets"
-            limits = await _admit(context, limits, limiter, budgets, reservation, routes)
+            limits = await _admit(context, limits, limiter, budgets, reservation, routes, cache_key)
     except (RedisError, SQLAlchemyError, OSError, TimeoutError, SpendUnknown) as exc:
         # Fail closed: without Redis or Postgres no key can be checked.
         log.warning("auth backend unavailable: %s", type(exc).__name__)
@@ -133,8 +136,9 @@ async def _resolve(
     cache: KeyCache,
     reservation: int | None,
     routes: Sequence[str],
+    cache_key: str,
 ) -> tuple[TenantContext | None, Decision | None]:
-    seen = await cache.lookup(key_hash, reservation=reservation, routes=routes)
+    seen = await cache.lookup(key_hash, reservation=reservation, routes=routes, cache_key=cache_key)
     if seen.context is not None:
         return seen.context, seen.decision
     async with sessions() as session, session.begin():
@@ -152,6 +156,7 @@ async def _admit(
     budgets: Budgets,
     reservation: int,
     routes: Sequence[str],
+    cache_key: str,
 ) -> Decision:
     """`limits` from the cached lookup, or the limiter's own check after a miss;
     a missing spend counter is refilled from the ledger and the check repeated."""
@@ -169,6 +174,8 @@ async def _admit(
             tpm_limit=context.tpm_limit,
             reservation=reservation,
             routes=routes,
+            # The tenant's own setting, known here from Postgres.
+            cache_key=cache_key if context.cache_enabled else "",
         )
     return limits
 

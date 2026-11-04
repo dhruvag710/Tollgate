@@ -25,6 +25,8 @@ from typing import Any, Literal, cast
 
 from redis.asyncio import Redis
 
+from tollgate.cache import exact
+from tollgate.cache.exact import CacheStore
 from tollgate.errors import TollgateError
 from tollgate.routing import circuit_breaker
 from tollgate.routing.circuit_breaker import BreakerSuccess, BreakerView, parse_views
@@ -40,21 +42,29 @@ LIBRARY = "\n".join(
     [
         *_lua("token_bucket.lua", "tpm_reserve.lua", "tpm_reconcile.lua", "budget.lua"),
         circuit_breaker.LIBRARY,
+        exact.LIBRARY,
         *_lua("admit.lua", "settle.lua"),
     ]
 )
 _CHECK = (
     LIBRARY
     + """
--- ARGV[6], ...: the providers whose breakers an admitted request is routed by.
+-- ARGV[6]: the request's exact-cache key, '' if it isn't cached. ARGV[7], ...:
+-- the providers whose breakers an admitted request is routed by.
 local reply = admit(ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[5]))
-if reply[1] == 'ok' then reply[6] = breaker_views(ARGV, 6, breaker_now_ms()) end
+if reply[1] == 'ok' then
+  reply[6] = breaker_views(ARGV, 7, breaker_now_ms())
+  reply[7] = exact_get(ARGV[1], ARGV[6])
+end
 return reply
 """
 )
 _SETTLE = (
     LIBRARY
     + """
+-- ARGV[7], ARGV[8], ARGV[9]: an exact-cache entry to store, its key ('' for
+-- none) and how many seconds it lasts.
+exact_put(ARGV[1], ARGV[7], ARGV[8], tonumber(ARGV[9]))
 return settle(ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), ARGV[5],
   tonumber(ARGV[6]))
 """
@@ -87,6 +97,8 @@ class Decision:
     # An admitted request's providers' breakers, in the order asked for, read
     # in the same call.
     breakers: tuple[BreakerView, ...] = ()
+    # An admitted request's exact-cache entry, if it has one (and asked).
+    cached: str | None = None
 
     @property
     def allowed(self) -> bool:
@@ -135,7 +147,8 @@ class Decision:
 def decision(
     reply: Any, *, rpm_limit: int, tpm_limit: int, reservation: int, budget_usd: Decimal | None
 ) -> Decision:
-    outcome, wait, requests, tokens, month, *views = cast(list[Any], reply)
+    outcome, wait, requests, tokens, month, *admitted = cast(list[Any], reply)
+    views, cached = [*admitted, None, None][:2]
     return Decision(
         outcome=outcome,
         retry_after_s=float(wait),
@@ -146,7 +159,8 @@ def decision(
         reserved=reservation,
         budget_usd=budget_usd,
         month=month,
-        breakers=parse_views(views[0]) if views else (),
+        breakers=parse_views(views) if views else (),
+        cached=cached or None,
     )
 
 
@@ -173,10 +187,20 @@ class RateLimiter:
         tpm_limit: int,
         reservation: int,
         routes: Sequence[str] = (),
+        cache_key: str = "",
     ) -> Decision:
-        """Admit a request; if admitted, also read the breakers of `routes`."""
+        """Admit a request; if admitted, also read the breakers of `routes`
+        and the exact-cache entry under `cache_key` ('' for none)."""
         reply = await self._check(
-            args=[tenant_id, budget_arg(budget_usd), rpm_limit, tpm_limit, reservation, *routes]
+            args=[
+                tenant_id,
+                budget_arg(budget_usd),
+                rpm_limit,
+                tpm_limit,
+                reservation,
+                cache_key,
+                *routes,
+            ]
         )
         return decision(
             reply,
@@ -192,10 +216,12 @@ class RateLimiter:
         used: int,
         cost_micro_usd: int,
         success: BreakerSuccess | None = None,
+        store: CacheStore | None = None,
     ) -> int:
         """Settle `reservation` against the tokens actually `used`, add the
-        request's cost to its tenant's spend, and count a `success` against a
-        provider's breaker; returns the new TPM balance."""
+        request's cost to its tenant's spend, count a `success` against a
+        provider's breaker, and `store` the request's answer in the exact
+        cache; returns the new TPM balance."""
         balance = await self._settle(
             args=[
                 reservation.tenant_id,
@@ -204,6 +230,9 @@ class RateLimiter:
                 cost_micro_usd,
                 "" if success is None else success.provider,
                 0 if success is None else success.window_ms,
+                "" if store is None else store.hash,
+                "" if store is None else store.entry,
+                0 if store is None else store.ttl_s,
             ]
         )
         return int(cast(int, balance))
