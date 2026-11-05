@@ -7,8 +7,9 @@ changing only `base_url`. See [SPEC.md](SPEC.md) for the full design.
 chat completions, the mock provider, tenants with API keys, per-tenant rate limits, a
 usage ledger in Postgres with monthly budgets, Prometheus metrics and JSON logs, and a
 three-replica setup behind nginx. Benchmarks: [BENCHMARKS.md](BENCHMARKS.md). v2 adds
-provider failover with circuit breakers shared by every replica (Phase 2.1) and an
-exact-match response cache (Phase 2.3).
+provider failover with circuit breakers shared by every replica (Phase 2.1), an
+exact-match response cache (Phase 2.3), and a semantic cache (Phase 2.4), off by default:
+B5 measured it over its latency budget (see below).
 
 ## Architecture
 
@@ -79,6 +80,47 @@ beyond its RPM slot: its token reservation is refunded, nothing is billed, and i
 event records `cache_status = HIT` and what the answer would have cost (`saved_cost_usd`).
 Responses say `X-Tollgate-Cache: HIT`, `MISS` or `BYPASS`. The cache adds no Redis call:
 the admission call reads the entry, and the settle call stores one.
+
+### Semantic cache
+
+Off by default. With it on, a cacheable request that misses the exact layer can be
+answered by meaning, in two stages:
+
+1. Its last user message is embedded (`all-MiniLM-L6-v2`). The nearest cached question of
+   the same tenant and scope (same model, system prompt, earlier turns and parameters) is a
+   candidate if their similarity is at least 0.68.
+2. An NLI cross-encoder (`nli-deberta-v3-xsmall`) reads both questions. It is a hit only if
+   each question entails the other, with a probability of at least 0.90.
+
+[B4](BENCHMARKS.md#b4-semantic-cache-evaluation) chose both models and thresholds: an
+embedding model alone can't tell "JSON to YAML" from "YAML to JSON".
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.semantic.yml up -d --build
+```
+
+turns it on. The command:
+
+- builds the gateway image with PyTorch (CPU) and both models in it, at the revisions B4
+  measured;
+- sets the six `SEMANTIC_CACHE_*` settings B4 chose (`.env.example`);
+- raises each replica's memory limit to 2 GiB, since both models load into every gateway
+  process. [B5](BENCHMARKS.md#b5-cache-impact) measured a 1,420 MiB peak, against about
+  200 MiB without the layer.
+
+Each model runs in a bounded thread pool of its own, off the event loop. A request that
+finds a pool full, or whose model fails or takes too long, is a miss and stores nothing in
+the semantic layer. A request never fails because of the cache.
+
+**It is off by default because B5 found it over budget.** On B5's workload it adds 2.6
+points of hit rate over the exact layer, 64.2% against 61.6%. The cost:
+- **Miss path over target:** 91 to 103 ms at p99, against a 25 ms target.
+- **Rejected candidates:** a quarter of semantic lookups pay for a rejected check, about
+  140 ms at the median.
+- **Other requests slowed:** the models throttle a 1-CPU replica, which slows requests the
+  cache can't serve.
+
+See [B5](BENCHMARKS.md#b5-cache-impact).
 
 ### Usage
 
@@ -192,7 +234,12 @@ environment, method, ranges across runs and the raw k6 output.
 | Added time to first chunk at 100 RPS, streamed | 1.13 ms p50, 10.56 ms p99 |
 | Max sustained throughput (p99 overhead ≤ 50 ms) | 250 RPS with 1 replica, 275 RPS with 3 |
 
-At 100 RPS both p99s are within SPEC's 20 ms target. One replica can't sustain SPEC's
+At 100 RPS both p99s are within SPEC's 20 ms target. **B3** (failover with the primary
+killed) and **B5** (the cache's impact) are also in BENCHMARKS.md. Both miss their targets,
+and both are explained there:
+- **B3:** a killed provider's name lookups held up the healthy provider's, and requests failed.
+  Reaching the providers by IP address, none did.
+- **B5:** the semantic layer's miss path is over its 25 ms budget. One replica can't sustain SPEC's
 500 RPS on this machine, and 3 replicas barely outscale one here. BENCHMARKS.md has the
 details, including how a cheaper healthcheck took the p99s down from 43 ms and 142 ms.
 
@@ -225,6 +272,10 @@ breaker cooldown.
 `bash bench/run_all.sh` runs the benchmarks (about an hour) in a separate compose project
 with fixed CPU and memory limits, and writes the raw k6 output to `bench/results/`;
 `python bench/report.py bench/results/<timestamp>` turns it into BENCHMARKS.md's tables.
+`bash bench/run_v2.sh` runs B5 and B3 the same way (about 75 minutes), and
+`python bench/v2_report.py bench/results/v2-<timestamp>` makes their tables. B5 first needs
+its workload's text, downloaded and checked against committed checksums:
+`python bench/workloads/make_workload.py --text`.
 
 With `SERVER_TIMING=true`, responses carry a `Server-Timing` header breaking down the
 gateway's time per stage (`auth`, `body`, `upstream-*`, plus `other`, `gateway` and

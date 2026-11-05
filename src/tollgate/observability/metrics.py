@@ -14,6 +14,7 @@ errors. Metrics are per process: run one uvicorn worker per replica.
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -25,7 +26,12 @@ from prometheus_client import (
 )
 
 from tollgate.db.models import CACHE_STATUSES, USAGE_STATUSES
+from tollgate.observability.timing import Timings
 from tollgate.routing.router import ATTEMPT_RESULTS
+
+if TYPE_CHECKING:
+    from tollgate.cache.pool import ModelPool
+    from tollgate.cache.semantic import Found
 
 # Codes of the errors that turn a chat request away before it has a usage event.
 ERROR_STATUSES = (
@@ -116,8 +122,10 @@ class Metrics:
         )
         self.cache_lookups = Counter(
             "tollgate_cache_lookups",
-            "Response cache lookups, by layer (exact, semantic) and result (hit, miss, "
-            "error: the semantic layer failed and counted as a miss).",
+            "Response cache lookups, by layer (exact, semantic) and result: hit or miss, "
+            "and for the semantic layer also rejected (its check turned the candidate "
+            "down), full (a model's pool had no room), timeout and error; each of the "
+            "last three counts as a miss that stores nothing.",
             ["layer", "result"],
             registry=registry,
         )
@@ -126,6 +134,28 @@ class Metrics:
             "Semantic lookups that found an entry in scope: its cosine similarity to the "
             "question, hit or not. Where the threshold falls among real questions.",
             buckets=(0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.92, 0.94, 0.96, 0.98, 0.99, 1.0),
+            registry=registry,
+        )
+        self.semantic_score = Histogram(
+            "tollgate_semantic_cache_check_score",
+            "Semantic lookups whose candidate was checked: the check's score, hit or not. "
+            "Where the verifier's threshold falls among real questions.",
+            buckets=(0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.99, 1.0),
+            registry=registry,
+        )
+        self.semantic_seconds = Histogram(
+            "tollgate_semantic_cache_seconds",
+            "Semantic lookups, by stage: miss_path (embedding the question, the wait for "
+            "the model included, then the Postgres lookup), and check (the candidate's "
+            "check, its wait included).",
+            ["stage"],
+            buckets=(0.0025, 0.005, 0.01, 0.015, 0.02, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5),
+            registry=registry,
+        )
+        self.semantic_in_flight = Gauge(
+            "tollgate_semantic_cache_in_flight",
+            "Calls running or waiting in each semantic cache model's pool (embed, verify).",
+            ["pool"],
             registry=registry,
         )
         self.breaker_transitions = Counter(
@@ -151,14 +181,26 @@ class Metrics:
     def cache_lookup(self, layer: str, result: str) -> None:
         self.cache_lookups.labels(layer, result).inc()
 
-    def semantic_lookup(
-        self, hit: bool, embedding: list[float] | None, similarity: float | None
-    ) -> None:
-        """A semantic lookup: a hit, a miss, or (no embedding) a failure."""
-        result = "hit" if hit else "miss" if embedding is not None else "error"
-        self.cache_lookup("semantic", result)
-        if similarity is not None:
-            self.semantic_similarity.observe(similarity)
+    def watch_semantic(self, *pools: "ModelPool") -> None:
+        """Read the semantic cache's pools at each scrape."""
+        for pool in pools:
+            self.semantic_in_flight.labels(pool.name).set_function(pool.in_flight)
+
+    def semantic_lookup(self, found: "Found", timings: Timings) -> None:
+        """A semantic lookup: how it ended, its scores, and its stages' times."""
+        self.cache_lookup("semantic", found.outcome)
+        if found.similarity is not None:
+            self.semantic_similarity.observe(found.similarity)
+        if found.score is not None:
+            self.semantic_score.observe(found.score)
+        if found.stage not in ("embed", "lookup"):  # the lookup ran
+            miss_path = sum(
+                timings.seconds(f"semantic-{s}") for s in ("embed-wait", "embed", "lookup")
+            )
+            self.semantic_seconds.labels("miss_path").observe(miss_path)
+        if found.score is not None or (found.stage == "verify" and found.outcome != "full"):
+            check = timings.seconds("semantic-verify-wait") + timings.seconds("semantic-verify")
+            self.semantic_seconds.labels("check").observe(check)
 
     def breaker_transition(self, provider: str, state: str) -> None:
         self.breaker_transitions.labels(

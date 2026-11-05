@@ -1,0 +1,50 @@
+{
+ "rate": 20,
+ "probe_rate": 20,
+ "requests": 20000,
+ "duration_s": 1000,
+ "mock_latency_ms": 1000,
+ "output_tokens": 128,
+ "tenant": "b5-on-20261105T155807Z",
+ "idle_s": 60,
+ "replay": {
+  "requests": 20000,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 3.45158,
+  "p95_ms": 1186.8670971,
+  "p99_ms": 1646.3010783299983
+ },
+ "probe_gateway": {
+  "requests": 20001,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 5.759098,
+  "p95_ms": 10.207637,
+  "p99_ms": 20.703849
+ },
+ "probe_mock": {
+  "requests": 20001,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 0.970125,
+  "p95_ms": 1.255291,
+  "p99_ms": 1.447681
+ },
+ "idle_gateway": {
+  "requests": 1201,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 4.262496,
+  "p95_ms": 5.485955,
+  "p99_ms": 6.786535
+ },
+ "idle_mock": {
+  "requests": 1200,
+  "error_rate": 0,
+  "dropped": 0,
+  "p50_ms": 1.0448905,
+  "p95_ms": 1.26769255,
+  "p99_ms": 1.4196278199999999
+ }
+}

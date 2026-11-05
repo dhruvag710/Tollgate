@@ -44,10 +44,10 @@ def qqp_archive() -> bytes:
     return path.read_bytes()
 
 
-def qqp_rows(archive: bytes) -> dict[str, Pair]:
-    """Every labelled pair of the split, by its QQP id."""
+def qqp_rows(archive: bytes, split: str = QQP_SPLIT) -> dict[str, Pair]:
+    """Every labelled pair of the split (B4's: dev), by its QQP id."""
     with zipfile.ZipFile(io.BytesIO(archive)) as z:
-        text = z.read(QQP_SPLIT).decode("utf-8")
+        text = z.read(split).decode("utf-8")
     rows = {}
     for row in csv.DictReader(io.StringIO(text), delimiter="\t", quoting=csv.QUOTE_NONE):
         if not row.get("question1") or not row.get("question2"):

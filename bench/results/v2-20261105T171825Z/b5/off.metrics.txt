@@ -1,0 +1,144 @@
+# HELP tollgate_requests_total Chat completion requests, by outcome.
+# TYPE tollgate_requests_total counter
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock",status="success"} 21401.0
+tollgate_requests_total{cache="MISS",model="gpt-4o-mini",provider="mock",status="success"} 7685.0
+tollgate_requests_total{cache="HIT",model="gpt-4o-mini",provider="none",status="success"} 12315.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="success"} 2.0
+# HELP tollgate_requests_created Chat completion requests, by outcome.
+# TYPE tollgate_requests_created gauge
+tollgate_requests_created{cache="BYPASS",model="gpt-4o-mini",provider="mock",status="success"} 1.7938992167466652e+09
+tollgate_requests_created{cache="MISS",model="gpt-4o-mini",provider="mock",status="success"} 1.7938992877402372e+09
+tollgate_requests_created{cache="HIT",model="gpt-4o-mini",provider="none",status="success"} 1.793899288529286e+09
+tollgate_requests_created{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="success"} 1.793899943906462e+09
+# HELP tollgate_request_duration_seconds Chat completion requests, from arrival to the end of the response or stream.
+# TYPE tollgate_request_duration_seconds histogram
+tollgate_request_duration_seconds_bucket{le="0.005"} 27092.0
+tollgate_request_duration_seconds_bucket{le="0.01"} 33150.0
+tollgate_request_duration_seconds_bucket{le="0.025"} 33688.0
+tollgate_request_duration_seconds_bucket{le="0.05"} 33714.0
+tollgate_request_duration_seconds_bucket{le="0.1"} 33718.0
+tollgate_request_duration_seconds_bucket{le="0.25"} 33718.0
+tollgate_request_duration_seconds_bucket{le="0.5"} 33718.0
+tollgate_request_duration_seconds_bucket{le="1.0"} 33718.0
+tollgate_request_duration_seconds_bucket{le="2.5"} 41403.0
+tollgate_request_duration_seconds_bucket{le="5.0"} 41403.0
+tollgate_request_duration_seconds_bucket{le="10.0"} 41403.0
+tollgate_request_duration_seconds_bucket{le="30.0"} 41403.0
+tollgate_request_duration_seconds_bucket{le="60.0"} 41403.0
+tollgate_request_duration_seconds_bucket{le="120.0"} 41403.0
+tollgate_request_duration_seconds_bucket{le="300.0"} 41403.0
+tollgate_request_duration_seconds_bucket{le="+Inf"} 41403.0
+tollgate_request_duration_seconds_count 41403.0
+tollgate_request_duration_seconds_sum 7853.404145882896
+# HELP tollgate_request_duration_seconds_created Chat completion requests, from arrival to the end of the response or stream.
+# TYPE tollgate_request_duration_seconds_created gauge
+tollgate_request_duration_seconds_created 1.7938991968872368e+09
+# HELP tollgate_gateway_overhead_seconds Time a request that reached a provider spent in the gateway, not waiting on the provider, until its response started.
+# TYPE tollgate_gateway_overhead_seconds histogram
+tollgate_gateway_overhead_seconds_bucket{le="0.0005"} 0.0
+tollgate_gateway_overhead_seconds_bucket{le="0.001"} 0.0
+tollgate_gateway_overhead_seconds_bucket{le="0.002"} 13853.0
+tollgate_gateway_overhead_seconds_bucket{le="0.005"} 28660.0
+tollgate_gateway_overhead_seconds_bucket{le="0.01"} 29043.0
+tollgate_gateway_overhead_seconds_bucket{le="0.02"} 29073.0
+tollgate_gateway_overhead_seconds_bucket{le="0.05"} 29087.0
+tollgate_gateway_overhead_seconds_bucket{le="0.1"} 29088.0
+tollgate_gateway_overhead_seconds_bucket{le="0.25"} 29088.0
+tollgate_gateway_overhead_seconds_bucket{le="0.5"} 29088.0
+tollgate_gateway_overhead_seconds_bucket{le="1.0"} 29088.0
+tollgate_gateway_overhead_seconds_bucket{le="+Inf"} 29088.0
+tollgate_gateway_overhead_seconds_count 29088.0
+tollgate_gateway_overhead_seconds_sum 62.98078475209513
+# HELP tollgate_gateway_overhead_seconds_created Time a request that reached a provider spent in the gateway, not waiting on the provider, until its response started.
+# TYPE tollgate_gateway_overhead_seconds_created gauge
+tollgate_gateway_overhead_seconds_created 1.7938991968872745e+09
+# HELP tollgate_ttft_seconds Streamed requests, from arrival to the first token.
+# TYPE tollgate_ttft_seconds histogram
+tollgate_ttft_seconds_bucket{le="0.025"} 0.0
+tollgate_ttft_seconds_bucket{le="0.05"} 0.0
+tollgate_ttft_seconds_bucket{le="0.1"} 0.0
+tollgate_ttft_seconds_bucket{le="0.25"} 0.0
+tollgate_ttft_seconds_bucket{le="0.5"} 0.0
+tollgate_ttft_seconds_bucket{le="1.0"} 0.0
+tollgate_ttft_seconds_bucket{le="2.5"} 0.0
+tollgate_ttft_seconds_bucket{le="5.0"} 0.0
+tollgate_ttft_seconds_bucket{le="10.0"} 0.0
+tollgate_ttft_seconds_bucket{le="30.0"} 0.0
+tollgate_ttft_seconds_bucket{le="+Inf"} 0.0
+tollgate_ttft_seconds_count 0.0
+tollgate_ttft_seconds_sum 0.0
+# HELP tollgate_ttft_seconds_created Streamed requests, from arrival to the first token.
+# TYPE tollgate_ttft_seconds_created gauge
+tollgate_ttft_seconds_created 1.7938991968872952e+09
+# HELP tollgate_ratelimit_rejections_total Requests turned away by a rate limit, by limit.
+# TYPE tollgate_ratelimit_rejections_total counter
+# HELP tollgate_ledger_queue_depth Usage events recorded but not yet written to the ledger.
+# TYPE tollgate_ledger_queue_depth gauge
+tollgate_ledger_queue_depth 0.0
+# HELP tollgate_provider_attempts_total Attempts at a provider, by result: one per provider a request tried, unless the request ended (its client left) before the attempt had a result.
+# TYPE tollgate_provider_attempts_total counter
+tollgate_provider_attempts_total{provider="mock",result="success"} 29086.0
+tollgate_provider_attempts_total{provider="mock",result="connect_error"} 2.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="success"} 2.0
+# HELP tollgate_provider_attempts_created Attempts at a provider, by result: one per provider a request tried, unless the request ended (its client left) before the attempt had a result.
+# TYPE tollgate_provider_attempts_created gauge
+tollgate_provider_attempts_created{provider="mock",result="success"} 1.7938992167459016e+09
+tollgate_provider_attempts_created{provider="mock",result="connect_error"} 1.7938999438987904e+09
+tollgate_provider_attempts_created{provider="mock-secondary",result="success"} 1.7938999439052515e+09
+# HELP tollgate_cache_lookups_total Response cache lookups, by layer (exact, semantic) and result: hit or miss, and for the semantic layer also rejected (its check turned the candidate down), full (a model's pool had no room), timeout and error; each of the last three counts as a miss that stores nothing.
+# TYPE tollgate_cache_lookups_total counter
+tollgate_cache_lookups_total{layer="exact",result="miss"} 7685.0
+tollgate_cache_lookups_total{layer="exact",result="hit"} 12315.0
+# HELP tollgate_cache_lookups_created Response cache lookups, by layer (exact, semantic) and result: hit or miss, and for the semantic layer also rejected (its check turned the candidate down), full (a model's pool had no room), timeout and error; each of the last three counts as a miss that stores nothing.
+# TYPE tollgate_cache_lookups_created gauge
+tollgate_cache_lookups_created{layer="exact",result="miss"} 1.7938992867370803e+09
+tollgate_cache_lookups_created{layer="exact",result="hit"} 1.7938992885289142e+09
+# HELP tollgate_semantic_cache_similarity Semantic lookups that found an entry in scope: its cosine similarity to the question, hit or not. Where the threshold falls among real questions.
+# TYPE tollgate_semantic_cache_similarity histogram
+tollgate_semantic_cache_similarity_bucket{le="0.5"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.6"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.7"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.8"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.85"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.9"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.92"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.94"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.96"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.98"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="0.99"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="1.0"} 0.0
+tollgate_semantic_cache_similarity_bucket{le="+Inf"} 0.0
+tollgate_semantic_cache_similarity_count 0.0
+tollgate_semantic_cache_similarity_sum 0.0
+# HELP tollgate_semantic_cache_similarity_created Semantic lookups that found an entry in scope: its cosine similarity to the question, hit or not. Where the threshold falls among real questions.
+# TYPE tollgate_semantic_cache_similarity_created gauge
+tollgate_semantic_cache_similarity_created 1.7938991968873446e+09
+# HELP tollgate_semantic_cache_check_score Semantic lookups whose candidate was checked: the check's score, hit or not. Where the verifier's threshold falls among real questions.
+# TYPE tollgate_semantic_cache_check_score histogram
+tollgate_semantic_cache_check_score_bucket{le="0.05"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.1"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.2"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.3"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.4"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.5"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.6"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.7"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.8"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.85"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.9"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.95"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="0.99"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="1.0"} 0.0
+tollgate_semantic_cache_check_score_bucket{le="+Inf"} 0.0
+tollgate_semantic_cache_check_score_count 0.0
+tollgate_semantic_cache_check_score_sum 0.0
+# HELP tollgate_semantic_cache_check_score_created Semantic lookups whose candidate was checked: the check's score, hit or not. Where the verifier's threshold falls among real questions.
+# TYPE tollgate_semantic_cache_check_score_created gauge
+tollgate_semantic_cache_check_score_created 1.7938991968873649e+09
+# HELP tollgate_semantic_cache_seconds Semantic lookups, by stage: miss_path (embedding the question, the wait for the model included, then the Postgres lookup), and check (the candidate's check, its wait included).
+# TYPE tollgate_semantic_cache_seconds histogram
+# HELP tollgate_semantic_cache_in_flight Calls running or waiting in each semantic cache model's pool (embed, verify).
+# TYPE tollgate_semantic_cache_in_flight gauge
+# HELP tollgate_breaker_transitions_total Circuit breaker state changes this replica made, by the state entered. The breakers are shared: sum over replicas for a provider's whole history.
+# TYPE tollgate_breaker_transitions_total counter
+

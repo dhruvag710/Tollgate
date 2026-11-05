@@ -9,6 +9,9 @@ Server-Timing header (durations in milliseconds), alongside:
 - `gateway`: everything except waiting on the provider (stages named
   `upstream-*`), the gateway's own overhead
 - `total`: from arrival until the header is sent
+
+and any notes code made with `note()` (as `name;desc=...`), such as how the
+semantic cache's lookup ended. Notes are fixed labels, never request content.
 """
 
 import time
@@ -22,6 +25,7 @@ class Timings:
     def __init__(self, started_at: float) -> None:
         self.started_at = started_at
         self._stages: dict[str, float] = {}
+        self._notes: dict[str, str] = {}
 
     @contextmanager
     def stage(self, name: str) -> Iterator[None]:
@@ -33,6 +37,14 @@ class Timings:
 
     def add(self, name: str, seconds: float) -> None:
         self._stages[name] = self._stages.get(name, 0.0) + seconds
+
+    def note(self, name: str, label: str) -> None:
+        """Report a label (a token: letters, digits, dashes) with the timings."""
+        self._notes[name] = label
+
+    def seconds(self, name: str) -> float:
+        """A stage's time so far (0 if it hasn't run)."""
+        return self._stages.get(name, 0.0)
 
     def upstream_seconds(self) -> float:
         """Time spent waiting on the provider so far."""
@@ -47,4 +59,6 @@ class Timings:
             "gateway": total - upstream,
             "total": total,
         }
-        return ", ".join(f"{name};dur={seconds * 1000:.3f}" for name, seconds in metrics.items())
+        entries = [f"{name};dur={seconds * 1000:.3f}" for name, seconds in metrics.items()]
+        entries += [f"{name};desc={label}" for name, label in self._notes.items()]
+        return ", ".join(entries)

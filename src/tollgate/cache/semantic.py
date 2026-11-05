@@ -1,29 +1,43 @@
 """The semantic layer of the response cache (SPEC Phase 2.4), in Postgres.
 
-A cacheable request that misses the exact layer is looked up by meaning: its
-last user message is embedded, and the nearest entry of the same tenant and
-scope answers it if it is close enough (cosine similarity at or above the
-threshold B4 chose). The scope is everything else about the request: the
-model, the system prompt and earlier turns, every parameter (the exact key of
-the request without its last message), so a question asked in a different
-conversation never matches. The search is exact: every unexpired entry of
-the tenant in the scope is compared, so no other tenant's entries can hide or
-change the answer (SPEC Phase 2.4 says why there is no HNSW index).
+A cacheable request that misses the exact layer is looked up by meaning, in two
+stages (B4, BENCHMARKS.md):
 
-The layer fails open: if the embedder or Postgres fails, the request is a
-miss, and goes to a provider as it would without a cache. Storing an answer,
+1. Its last user message is embedded, and the nearest entry of the same tenant
+   and scope is the candidate if it is close enough: cosine similarity at or
+   above the threshold, a loose one that keeps most real paraphrases.
+2. A cross-encoder (cache.verifier) reads the candidate's question and this one
+   together, and the candidate answers the request only if its score is at or
+   above the verifier's threshold.
+
+The scope is everything else about the request: the model, the system prompt
+and earlier turns, every parameter (the exact key of the request without its
+last message), so a question asked in a different conversation never matches.
+The search is exact: every unexpired entry of the tenant in the scope is
+compared, so no other tenant's entries can hide or change the answer (SPEC
+Phase 2.4 says why there is no HNSW index).
+
+Each model runs in a bounded pool of its own (cache.pool), off the event loop:
+the check, about ten times slower than the embedding, never holds an embedding
+up. The layer fails open: if a pool is full, a model fails or takes too long,
+or Postgres fails, the request is a miss and goes to a provider as it would
+without a cache. A lookup that didn't complete changes nothing in the layer
+either: only one that did (no candidate, or a candidate the check turned down)
+stores the request's answer afterwards, so nothing is served or stored on the
+strength of a check that errored, timed out or never ran. Storing an answer,
 and counting a hit, happen off the response path.
 """
 
 import asyncio
 import logging
+import math
 import uuid
-from collections.abc import Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from functools import partial
+from typing import Any, Literal
 
-import anyio
 from sqlalchemy import Select, delete, func, insert, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,9 +45,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tollgate.cache.embedder import Embedder
 from tollgate.cache.exact import storable
 from tollgate.cache.policy import exact_key
+from tollgate.cache.pool import Done, ModelPool, PoolFull
+from tollgate.cache.verifier import Verifier
 from tollgate.db.models import CacheEntryRow
+from tollgate.observability.timing import Timings
 
 log = logging.getLogger(__name__)
+
+# What the models are given to answer once at startup (SemanticCache.warm_up).
+WARM_UP_TEXT = "warm-up"
+WARM_UP_PAIR = ("warm up", "warm-up")
 
 # Failures the layer survives as misses (the embedder's could be anything).
 _DB_ERRORS = (SQLAlchemyError, OSError, TimeoutError)
@@ -66,14 +87,37 @@ def question_of(body: Mapping[str, Any]) -> Question | None:
     return Question(exact_key({**body, "messages": messages[:-1]}), content)
 
 
+# How a lookup ended. "hit": the candidate passed the check. "miss": no
+# candidate (no entry in scope, or none close enough). "rejected": the check
+# turned the candidate down. The rest are failures, each a miss that stores
+# nothing: "full" (the stage's pool had no room), "timeout", "error".
+Outcome = Literal["hit", "miss", "rejected", "full", "timeout", "error"]
+Stage = Literal["embed", "lookup", "verify"]
+
+
 @dataclass(frozen=True)
 class Found:
     """The semantic layer's answer to a question."""
 
-    embedding: list[float] | None  # None: the layer failed; nothing to store either
+    outcome: Outcome
+    stage: Stage | None = None  # where a failure happened
+    # The question's embedding, only when the lookup completed without a hit:
+    # the request's answer may then be stored by it.
+    embedding: list[float] | None = None
     completion: dict[str, Any] | None = None  # a hit
     entry_id: int | None = None
-    similarity: float | None = None  # the nearest entry's, hit or not
+    similarity: float | None = None  # the nearest entry's, if one was found
+    score: float | None = None  # the check's, if it ran
+
+
+@dataclass(frozen=True)
+class Limits:
+    """Room in each model's pool, and how long a call to it may take, the
+    wait for the pool included."""
+
+    queue_size: int
+    embed_timeout_s: float
+    verify_timeout_s: float
 
 
 class SemanticCache:
@@ -81,35 +125,122 @@ class SemanticCache:
         self,
         sessions: async_sessionmaker[AsyncSession],
         embedder: Embedder,
+        verifier: Verifier,
         *,
         threshold: float,
+        verifier_threshold: float,
         ttl_s: int,
+        limits: Limits,
     ) -> None:
         self._sessions = sessions
         self._embedder = embedder
-        self.threshold = threshold
+        self._verifier = verifier
+        self.threshold = threshold  # the candidate's similarity, at least
+        self.verifier_threshold = verifier_threshold  # the check's score, at least
         self._ttl = timedelta(seconds=ttl_s)
+        self._limits = limits
+        # One thread per model: a replica runs on one CPU, and a model's
+        # tokenizer can't be used by two threads at once.
+        self.embed_pool = ModelPool("embed", queue_size=limits.queue_size)
+        self.verify_pool = ModelPool("verify", queue_size=limits.queue_size)
         self._tasks: set[asyncio.Task[None]] = set()
 
-    async def find(self, tenant_id: str, question: Question) -> Found:
-        """Embed the question and look for its answer. Never raises: a failure
-        is a miss (logged by type only; the question is a prompt)."""
+    async def warm_up(self) -> None:
+        """One call to each model, in its pool's thread: a broken model stops the
+        gateway starting, and the first request doesn't pay for setting it up."""
+        await self.embed_pool.run(partial(self._embedder.embed, WARM_UP_TEXT), 60.0)
+        await self.verify_pool.run(partial(self._verifier.score, *WARM_UP_PAIR), 60.0)
+
+    def close(self) -> None:
+        self.embed_pool.close()
+        self.verify_pool.close()
+
+    async def find(
+        self, tenant_id: str, question: Question, timings: Timings | None = None
+    ) -> Found:
+        """Look for the question's answer, in two stages. Never raises: a failure
+        is a miss (logged by type only; the question is a prompt). `timings`
+        gets each stage's time, the wait for a model's pool apart from its
+        call, and how the lookup ended."""
+        timings = timings or Timings(0.0)
+        embedded = await self._call(
+            self.embed_pool,
+            partial(self._embedder.embed, question.text),
+            self._limits.embed_timeout_s,
+            "embed",
+            timings,
+        )
+        if isinstance(embedded, Found):
+            return embedded
+        embedding = embedded.value
         try:
-            embedding = await anyio.to_thread.run_sync(self._embedder.embed, question.text)
-        except Exception as exc:
-            log.warning("semantic cache: could not embed a query: %s", type(exc).__name__)
-            return Found(None)
-        try:
-            nearest = await self._nearest(tenant_id, question.scope, embedding)
+            with timings.stage("semantic-lookup"):
+                nearest = await self._nearest(tenant_id, question.scope, embedding)
         except _DB_ERRORS as exc:
             log.warning("semantic cache: lookup failed: %s", type(exc).__name__)
-            return Found(None)
+            return self._ended(Found("error", "lookup"), timings)
         if nearest is None:
-            return Found(embedding)
-        entry_id, completion, similarity = nearest
-        if similarity >= self.threshold and storable(completion):
-            return Found(embedding, completion, entry_id, similarity)
-        return Found(embedding, similarity=similarity)
+            return self._ended(Found("miss", embedding=embedding), timings)
+        entry_id, completion, similarity, cached_text = nearest
+        if similarity < self.threshold or not storable(completion):
+            return self._ended(Found("miss", embedding=embedding, similarity=similarity), timings)
+        checked = await self._call(
+            self.verify_pool,
+            partial(self._verifier.score, cached_text, question.text),
+            self._limits.verify_timeout_s,
+            "verify",
+            timings,
+            similarity,
+        )
+        if isinstance(checked, Found):
+            return checked
+        score = checked.value
+        usable = isinstance(score, float | int) and not isinstance(score, bool)
+        if not usable or not math.isfinite(score):
+            log.warning("semantic cache: the check returned no usable score")
+            return self._ended(Found("error", "verify", similarity=similarity), timings)
+        if score < self.verifier_threshold:
+            found = Found("rejected", embedding=embedding, similarity=similarity, score=score)
+            return self._ended(found, timings)
+        hit = Found("hit", completion=completion, entry_id=entry_id, similarity=similarity,
+                    score=score)  # fmt: skip
+        return self._ended(hit, timings)
+
+    async def _call[T](
+        self,
+        pool: ModelPool,
+        call: Callable[[], T],
+        timeout_s: float,
+        stage: Stage,
+        timings: Timings,
+        similarity: float | None = None,
+    ) -> Done[T] | Found:
+        """One model's call in its pool: what it returned, or the Found that
+        ends the lookup if there was no room, or it failed or took too long."""
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            done = await pool.run(call, timeout_s)
+        except PoolFull:
+            return self._ended(Found("full", stage, similarity=similarity), timings)
+        except TimeoutError:
+            timings.add(f"semantic-{stage}-wait", loop.time() - started)
+            log.warning("semantic cache: %s took longer than %.0f ms", stage, timeout_s * 1000)
+            return self._ended(Found("timeout", stage, similarity=similarity), timings)
+        except Exception as exc:
+            timings.add(f"semantic-{stage}", loop.time() - started)
+            log.warning("semantic cache: %s failed: %s", stage, type(exc).__name__)
+            return self._ended(Found("error", stage, similarity=similarity), timings)
+        timings.add(f"semantic-{stage}-wait", done.waited_s)
+        timings.add(f"semantic-{stage}", done.ran_s)
+        return done
+
+    @staticmethod
+    def _ended(found: Found, timings: Timings) -> Found:
+        """Note how the lookup ended: its outcome, and where it failed."""
+        timings.note("semantic", found.outcome if found.stage is None else
+                     f"{found.stage}-{found.outcome}")  # fmt: skip
+        return found
 
     @staticmethod
     def nearest_query(tenant_id: str, scope: str, embedding: list[float]) -> Select[Any]:
@@ -118,7 +249,9 @@ class SemanticCache:
         each one's distance is computed."""
         distance = CacheEntryRow.embedding.cosine_distance(embedding)
         return (
-            select(CacheEntryRow.id, CacheEntryRow.response_json, distance)
+            select(
+                CacheEntryRow.id, CacheEntryRow.response_json, distance, CacheEntryRow.query_text
+            )
             .where(
                 CacheEntryRow.tenant_id == uuid.UUID(tenant_id),
                 CacheEntryRow.scope_hash == scope,
@@ -130,14 +263,15 @@ class SemanticCache:
 
     async def _nearest(
         self, tenant_id: str, scope: str, embedding: list[float]
-    ) -> tuple[int, dict[str, Any], float] | None:
+    ) -> tuple[int, dict[str, Any], float, str] | None:
+        """The nearest entry: its id, answer, similarity and question."""
         query = self.nearest_query(tenant_id, scope, embedding)
         async with self._sessions() as session, session.begin():
             row = (await session.execute(query)).first()
         if row is None:
             return None
-        entry_id, completion, cosine_distance = row
-        return entry_id, completion, 1.0 - float(cosine_distance)
+        entry_id, completion, cosine_distance, cached_text = row
+        return entry_id, completion, 1.0 - float(cosine_distance), cached_text
 
     def store(
         self, tenant_id: str, question: Question, embedding: list[float], completion: dict[str, Any]

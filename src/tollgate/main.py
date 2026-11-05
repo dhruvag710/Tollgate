@@ -22,7 +22,8 @@ from tollgate.api.admin import tenants as admin_tenants
 from tollgate.api.v1 import chat, models
 from tollgate.auth.cache import KeyCache
 from tollgate.cache.embedder import Embedder, SentenceTransformerEmbedder
-from tollgate.cache.semantic import SemanticCache
+from tollgate.cache.semantic import Limits, SemanticCache
+from tollgate.cache.verifier import NLIVerifier, Verifier
 from tollgate.config import Settings, load_providers_file
 from tollgate.db.models import EMBEDDING_DIMENSIONS
 from tollgate.db.session import create_engine, create_sessionmaker
@@ -90,29 +91,50 @@ class RequestIDMiddleware:
                 )
 
 
+SEMANTIC_SETTINGS = (
+    "SEMANTIC_CACHE_MODEL",
+    "SEMANTIC_CACHE_THRESHOLD",
+    "SEMANTIC_CACHE_VERIFIER",
+    "SEMANTIC_CACHE_VERIFIER_THRESHOLD",
+)
+
+
 async def _semantic_cache(
     settings: Settings,
     sessions: Any,
     embedder: Embedder | None,
+    verifier: Verifier | None,
 ) -> SemanticCache | None:
-    """The semantic cache layer, if configured: a model (or a test's embedder)
-    and the threshold B4 chose. Its model loads now, so a broken one stops the
-    gateway starting rather than failing requests."""
-    threshold = settings.semantic_cache_threshold
-    if threshold is None or (embedder is None and settings.semantic_cache_model is None):
-        if threshold is not None or settings.semantic_cache_model is not None:
+    """The semantic cache layer, if configured: both models (or a test's
+    stand-ins) and both thresholds B4 chose. The models load now and answer
+    once each, so a broken one stops the gateway starting rather than failing
+    requests, and the first request doesn't pay for setting them up."""
+    s = settings
+    given = {
+        "SEMANTIC_CACHE_MODEL": s.semantic_cache_model is not None or embedder is not None,
+        "SEMANTIC_CACHE_THRESHOLD": s.semantic_cache_threshold is not None,
+        "SEMANTIC_CACHE_VERIFIER": s.semantic_cache_verifier is not None or verifier is not None,
+        "SEMANTIC_CACHE_VERIFIER_THRESHOLD": s.semantic_cache_verifier_threshold is not None,
+    }
+    if not all(given.values()):
+        if any(given.values()):
             log.warning(
-                "the semantic cache is off: it needs both SEMANTIC_CACHE_MODEL and "
-                "SEMANTIC_CACHE_THRESHOLD"
+                "the semantic cache is off: it needs all of %s; missing: %s. B4 found that no "
+                "embedding model alone keeps false hits within target (BENCHMARKS.md)",
+                ", ".join(SEMANTIC_SETTINGS),
+                ", ".join(name for name, ok in given.items() if not ok),
             )
         return None
+    assert s.semantic_cache_threshold is not None
+    assert s.semantic_cache_verifier_threshold is not None
     if embedder is None:
-        assert settings.semantic_cache_model is not None
+        assert s.semantic_cache_model is not None
         embedder = await anyio.to_thread.run_sync(
             partial(
                 SentenceTransformerEmbedder,
-                settings.semantic_cache_model,
-                threads=settings.semantic_cache_threads,
+                s.semantic_cache_model,
+                revision=s.semantic_cache_model_revision,
+                threads=s.semantic_cache_threads,
             )
         )
     if embedder.dimensions != EMBEDDING_DIMENSIONS:
@@ -120,9 +142,35 @@ async def _semantic_cache(
             f"the semantic cache stores {EMBEDDING_DIMENSIONS}-dimension embeddings; "
             f"the model makes {embedder.dimensions}"
         )
-    return SemanticCache(
-        sessions, embedder, threshold=threshold, ttl_s=settings.semantic_cache_ttl_s
+    if verifier is None:
+        assert s.semantic_cache_verifier is not None
+        verifier = await anyio.to_thread.run_sync(
+            partial(
+                NLIVerifier,
+                s.semantic_cache_verifier,
+                revision=s.semantic_cache_verifier_revision,
+                threads=s.semantic_cache_threads,
+            )
+        )
+    semantic = SemanticCache(
+        sessions,
+        embedder,
+        verifier,
+        threshold=s.semantic_cache_threshold,
+        verifier_threshold=s.semantic_cache_verifier_threshold,
+        ttl_s=s.semantic_cache_ttl_s,
+        limits=Limits(
+            queue_size=s.semantic_cache_queue_size,
+            embed_timeout_s=s.semantic_cache_embed_timeout_ms / 1000,
+            verify_timeout_s=s.semantic_cache_verify_timeout_ms / 1000,
+        ),
     )
+    try:
+        await semantic.warm_up()
+    except BaseException:
+        semantic.close()
+        raise
+    return semantic
 
 
 async def _sweep(semantic: SemanticCache, settings: Settings) -> None:
@@ -145,10 +193,11 @@ def create_app(
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     ledger: Ledger | None = None,
     embedder: Embedder | None = None,
+    verifier: Verifier | None = None,
 ) -> FastAPI:
     """Build the gateway. `upstream_transport` lets tests run providers in-process;
-    `ledger` replaces the Postgres ledger; `embedder` replaces the semantic
-    cache's model (which still needs SEMANTIC_CACHE_THRESHOLD to be on)."""
+    `ledger` replaces the Postgres ledger; `embedder` and `verifier` replace the
+    semantic cache's models (the layer still needs both thresholds to be on)."""
     settings = settings or Settings()
     configure_logging(settings.log_level)
     if settings.web_concurrency > 1:
@@ -211,9 +260,10 @@ def create_app(
             writer.start(postgres_writer(app.state.sessions))
         try:
             semantic = app.state.semantic = await _semantic_cache(
-                settings, app.state.sessions, embedder
+                settings, app.state.sessions, embedder, verifier
             )
             if semantic is not None:
+                metrics.watch_semantic(semantic.embed_pool, semantic.verify_pool)
                 sweeper = asyncio.create_task(_sweep(semantic, settings))
             # Before serving, so a cold gateway can take a burst (best effort).
             await open_connections(
@@ -231,6 +281,8 @@ def create_app(
         finally:
             if sweeper is not None:
                 sweeper.cancel()
+            if semantic is not None:
+                semantic.close()
             # After every request has recorded its event: shutdown flushes them all.
             if writer is not None:
                 await writer.close(settings.ledger_shutdown_timeout_s)

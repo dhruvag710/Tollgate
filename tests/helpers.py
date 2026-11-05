@@ -23,6 +23,7 @@ import yaml
 from alembic.config import Config
 from sqlalchemy import select
 
+from tollgate.cache.semantic import WARM_UP_PAIR
 from tollgate.config import Settings
 from tollgate.db import tenants
 from tollgate.db.models import UsageEventRow
@@ -236,6 +237,35 @@ class WordEmbedder:
             vector[int.from_bytes(digest[:4], "big") % self.dimensions] += 1.0
         norm = math.sqrt(sum(x * x for x in vector)) or 1.0
         return [x / norm for x in vector]
+
+
+class StandInVerifier:
+    """A deterministic stand-in for the semantic cache's cross-encoder: it
+    scores every pair `default` (1, a match) unless `scores` holds that
+    (cached, query) pair's score. `calls` records what it checked, the
+    gateway's warm-up included. Set `fail` to make it raise, `delay_s` to
+    make it slow, or `gate` to make it wait until the event is set."""
+
+    def __init__(self, default: float = 1.0) -> None:
+        self.default = default
+        self.scores: dict[tuple[str, str], float] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.fail = False
+        self.delay_s = 0.0
+        self.gate: threading.Event | None = None
+        self.entered = threading.Event()  # set once a check (not the warm-up) has begun
+
+    def score(self, cached: str, query: str) -> float:
+        self.calls.append((cached, query))
+        if (cached, query) != WARM_UP_PAIR:
+            self.entered.set()
+        if self.gate is not None:
+            self.gate.wait(10)
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        if self.fail:
+            raise RuntimeError("the verifier is down")
+        return self.scores.get((cached, query), self.default)
 
 
 class NoBreakers:

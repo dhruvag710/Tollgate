@@ -1,0 +1,35 @@
+# The semantic cache on (SPEC Phase 2.4), as B4 chose it (BENCHMARKS.md):
+# sentence-transformers/all-MiniLM-L6-v2 finds the nearest cached question, a
+# candidate at a cosine similarity of at least 0.68, and
+# cross-encoder/nli-deberta-v3-xsmall checks it, a hit at a score of at least
+# 0.90 (each question must entail the other). Both at the revisions B4
+# measured, baked into the gateway image, which this file builds with the
+# semantic extra:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.semantic.yml up -d --build
+#
+# Memory: both models live in every gateway process, so each replica gets 2 GiB,
+# where the benchmarks give one without the layer 512 MiB. B5 (BENCHMARKS.md)
+# measured a replica with the layer on at 1,420 MiB at its peak, the models'
+# file cache included, and its processes holding 644 MiB at the end, against
+# 150 MiB without the layer. The kernel takes file cache back before it runs out.
+# CPU: B5 also found the models' work throttling a 1-CPU replica, which slowed
+# the requests the cache can't serve; give a replica more CPU if that matters.
+services:
+  gateway:
+    image: tollgate-gateway-semantic
+    build:
+      context: .
+      args:
+        SEMANTIC: "true"
+    environment:
+      SEMANTIC_CACHE_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      SEMANTIC_CACHE_MODEL_REVISION: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+      SEMANTIC_CACHE_THRESHOLD: "0.68"
+      SEMANTIC_CACHE_VERIFIER: cross-encoder/nli-deberta-v3-xsmall
+      SEMANTIC_CACHE_VERIFIER_REVISION: a150876415327c80daeff35ca6f68f5ed8cf5c24
+      SEMANTIC_CACHE_VERIFIER_THRESHOLD: "0.90"
+    deploy:
+      resources:
+        limits:
+          memory: 2g

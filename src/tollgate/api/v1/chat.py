@@ -198,17 +198,19 @@ async def chat_completions(
     found = None
     if question is not None:
         assert semantic is not None
-        with timings.stage("cache-semantic"):
-            found = await semantic.find(tenant.tenant_id, question)
-        metrics.semantic_lookup(found.completion is not None, found.embedding, found.similarity)
+        found = await semantic.find(tenant.tenant_id, question, timings)
+        metrics.semantic_lookup(found, timings)
         if found.completion is not None:
             assert found.entry_id is not None
             semantic.touch(found.entry_id)
             cached = found.completion
     if cached is not None:
         observation.cache = "HIT"
+        hit_headers = limits.headers()
+        if settings.server_timing:
+            hit_headers["Server-Timing"] = timings.server_timing()
         return await _answer_from_cache(
-            request, req, tenant, cached, metering, reservation, observation, limits.headers()
+            request, req, tenant, cached, metering, reservation, observation, hit_headers
         )
     cache_status: CacheStatus = "MISS" if consulted else "BYPASS"
     observation.cache = cache_status
@@ -235,8 +237,10 @@ async def chat_completions(
     meter.cache_status = cache_status
     if consulted:
         meter.cache_key = cache_key  # a miss: store the answer, once complete
+    # And in the semantic layer, by this embedding: only after a lookup that
+    # completed (never one whose check errored, timed out or found no room).
     if question is not None and found is not None and found.embedding is not None:
-        assert semantic is not None  # and in the semantic layer, by this embedding
+        assert semantic is not None
         meter.semantic_store = partial(semantic.store, tenant.tenant_id, question, found.embedding)
     headers = {**limits.headers(), "X-Tollgate-Cache": cache_status}
     if not req.stream:

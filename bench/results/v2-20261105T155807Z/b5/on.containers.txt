@@ -1,0 +1,23 @@
+/tollgate-bench-gateway-1 image=tollgate-gateway-semantic cpus=1000000000 memory=2147483648 cpu.max=100000/100000
+    SEMANTIC_CACHE_VERIFIER_REVISION=a150876415327c80daeff35ca6f68f5ed8cf5c24
+    SERVER_TIMING=true
+    SEMANTIC_CACHE_MODEL_REVISION=1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+    WEB_CONCURRENCY=1
+    LOG_LEVEL=WARNING
+    SEMANTIC_CACHE_THRESHOLD=0.68
+    SEMANTIC_CACHE_VERIFIER=cross-encoder/nli-deberta-v3-xsmall
+    SEMANTIC_CACHE_MODEL=sentence-transformers/all-MiniLM-L6-v2
+    SEMANTIC_CACHE_VERIFIER_THRESHOLD=0.90
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-mock_provider-1 image=tollgate-bench-mock_provider cpus=1500000000 memory=536870912 cpu.max=150000/100000
+    MOCK_OUTPUT_TOKENS=32
+    MOCK_LATENCY_MS=0
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+/tollgate-bench-mock_provider_secondary-1 image=tollgate-bench-mock_provider_secondary cpus=0 memory=0 cpu.max=max/100000
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+    MOCK_OUTPUT_TOKENS=32
+    MOCK_LATENCY_MS=0
+/tollgate-bench-postgres-1 image=pgvector/pgvector:pg16 cpus=1000000000 memory=1073741824 cpu.max=100000/100000
+/tollgate-bench-redis-1 image=redis:7-alpine cpus=500000000 memory=268435456 cpu.max=50000/100000

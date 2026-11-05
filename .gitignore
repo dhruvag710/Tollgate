@@ -12,3 +12,7 @@ CLAUDE.md
 
 # B4: downloaded QQP data, never committed (bench/cache_eval/pairs.py)
 bench/cache_eval/.data/
+
+# B5: downloaded MS MARCO queries and the workload text, never committed
+# (bench/workloads/make_workload.py)
+bench/workloads/.data/

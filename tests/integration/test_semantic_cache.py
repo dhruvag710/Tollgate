@@ -1,13 +1,17 @@
 """The semantic cache end to end (SPEC Phase 2.4), against real Postgres and
-pgvector, with a stand-in embedder (tests/helpers.py) and a threshold of 0.9
-for it: a question asked with one word more hits, one with a word changed
-("Austria", "Australia") misses.
+pgvector, with stand-ins for both models (tests/helpers.py): an embedder and a
+threshold of 0.9 for it, so a question asked with one word more is a candidate
+and one with a word changed ("Austria", "Australia") isn't, and a verifier
+that passes every candidate unless a test tells it otherwise.
 
-The real models and the real threshold are B4's business (bench/cache_eval).
+The real models and the real thresholds are B4's business (bench/cache_eval).
 """
 
 import asyncio
 import json
+import logging
+import threading
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,15 +26,16 @@ from sqlalchemy.exc import OperationalError
 
 from mock_provider.app import Stats
 from mock_provider.app import create_app as create_mock_app
-from tests.helpers import TEST_PROVIDERS, MemoryLedger, WordEmbedder, issue_key
+from tests.helpers import TEST_PROVIDERS, MemoryLedger, StandInVerifier, WordEmbedder, issue_key
 from tests.integration.test_rate_limit import RoundTrips
-from tollgate.cache.semantic import SemanticCache, question_of
+from tollgate.cache.semantic import WARM_UP_PAIR, WARM_UP_TEXT, SemanticCache, question_of
 from tollgate.config import Settings
 from tollgate.db.models import CacheEntryRow
 from tollgate.main import create_app
 from tollgate.usage.ledger import UsageEvent
 
 THRESHOLD = 0.9
+VERIFIER_THRESHOLD = 0.5
 
 
 def ask(question: str, **fields: Any) -> dict[str, Any]:
@@ -85,20 +90,26 @@ class Gateway:
             return list(rows)
 
 
+LAYER_ON = {
+    "semantic_cache_threshold": THRESHOLD,
+    "semantic_cache_verifier_threshold": VERIFIER_THRESHOLD,
+}
+
+
 @asynccontextmanager
 async def gateway(
-    settings: dict[str, Any] | None = None, embedder: WordEmbedder | None = None
+    settings: dict[str, Any] | None = None,
+    embedder: WordEmbedder | None = None,
+    verifier: StandInVerifier | None = None,
 ) -> AsyncIterator[Gateway]:
     issued = await issue_key(rpm_limit=1000, tpm_limit=1_000_000)
     ledger, mock = MemoryLedger(), create_mock_app(env={"MOCK_SEED": "7"})
     app = create_app(
-        Settings(
-            providers_config=TEST_PROVIDERS,
-            **{"semantic_cache_threshold": THRESHOLD, **(settings or {})},
-        ),
+        Settings(providers_config=TEST_PROVIDERS, **{**LAYER_ON, **(settings or {})}),
         upstream_transport=httpx.ASGITransport(app=mock),
         ledger=ledger,
         embedder=embedder or WordEmbedder(),
+        verifier=verifier or StandInVerifier(),
     )
     async with (
         app.router.lifespan_context(app),
@@ -194,7 +205,7 @@ async def test_only_the_last_user_message_is_embedded() -> None:
             {"role": "user", "content": "what is the capital of austria"},
         ]}  # fmt: skip
         await g.chat(body)
-    assert embedder.texts == ["what is the capital of austria"]
+    assert embedder.texts == [WARM_UP_TEXT, "what is the capital of austria"]
 
 
 @pytest.mark.parametrize(
@@ -213,7 +224,7 @@ async def test_requests_without_a_question_to_embed_skip_the_layer(body: dict[st
     async with gateway(embedder=embedder) as g:
         assert (await g.chat(body)).status_code == 200
         assert await g.entries() == []
-    assert embedder.texts == []
+    assert embedder.texts == [WARM_UP_TEXT]  # only the startup's
 
 
 async def test_a_streamed_answer_is_kept_and_a_paraphrase_is_replayed(gw: Gateway) -> None:
@@ -259,8 +270,8 @@ async def test_failures_and_cut_off_answers_are_not_kept(gw: Gateway) -> None:
 
 async def test_a_failing_embedder_is_a_miss_not_an_error() -> None:
     embedder = WordEmbedder()
-    embedder.fail = True
     async with gateway(embedder=embedder) as g:
+        embedder.fail = True  # after the startup's warm-up
         r = await g.chat(AUSTRIA)
         assert (r.status_code, r.headers["x-tollgate-cache"]) == (200, "MISS")
         assert await g.entries() == []  # nothing to store it by
@@ -351,23 +362,153 @@ async def test_a_semantic_hit_costs_no_redis_round_trip(
     ]
 
 
-async def test_the_layer_is_off_until_a_threshold_is_set() -> None:
-    embedder = WordEmbedder()
-    async with gateway({"semantic_cache_threshold": None}, embedder=embedder) as g:
+@pytest.mark.parametrize("unset", ["semantic_cache_threshold", "semantic_cache_verifier_threshold"])
+async def test_the_layer_is_off_until_both_thresholds_are_set(unset: str) -> None:
+    embedder, verifier = WordEmbedder(), StandInVerifier()
+    async with gateway({unset: None}, embedder=embedder, verifier=verifier) as g:
         await g.chat(AUSTRIA)
         assert (await g.chat(AUSTRIA_AGAIN)).headers["x-tollgate-cache"] == "MISS"
         assert g.app.state.semantic is None
+    assert embedder.texts == [] and verifier.calls == []
+
+
+async def test_the_layer_is_off_without_a_verifier(caplog: pytest.LogCaptureFixture) -> None:
+    """B4: no embedding model alone keeps false hits within target, so an
+    embedding model and its threshold aren't enough to turn the layer on."""
+    embedder = WordEmbedder()
+    app = create_app(
+        Settings(providers_config=TEST_PROVIDERS, semantic_cache_threshold=THRESHOLD),
+        ledger=MemoryLedger(),
+        embedder=embedder,
+    )
+    with caplog.at_level(logging.WARNING, logger="tollgate.main"):
+        async with app.router.lifespan_context(app):
+            assert app.state.semantic is None
     assert embedder.texts == []
+    assert "the semantic cache is off" in caplog.text
+    assert "missing: SEMANTIC_CACHE_VERIFIER, SEMANTIC_CACHE_VERIFIER_THRESHOLD" in caplog.text
 
 
 async def test_a_model_of_the_wrong_size_stops_the_gateway_starting() -> None:
     embedder = WordEmbedder()
     embedder.dimensions = 768
     app = create_app(
-        Settings(providers_config=TEST_PROVIDERS, semantic_cache_threshold=THRESHOLD),
+        Settings(providers_config=TEST_PROVIDERS, **LAYER_ON),
         ledger=MemoryLedger(),
         embedder=embedder,
+        verifier=StandInVerifier(),
     )
     with pytest.raises(RuntimeError, match="384-dimension"):
         async with app.router.lifespan_context(app):
             pass
+
+
+async def test_a_model_that_fails_its_warm_up_stops_the_gateway_starting() -> None:
+    verifier = StandInVerifier()
+    verifier.fail = True
+    app = create_app(
+        Settings(providers_config=TEST_PROVIDERS, **LAYER_ON),
+        ledger=MemoryLedger(),
+        embedder=WordEmbedder(),
+        verifier=verifier,
+    )
+    with pytest.raises(RuntimeError, match="the verifier is down"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert verifier.calls == [WARM_UP_PAIR]
+
+
+# --- the check ---------------------------------------------------------------------------
+
+
+async def test_the_check_reads_the_cached_question_and_then_the_new_one() -> None:
+    verifier = StandInVerifier()
+    async with gateway(verifier=verifier) as g:
+        await g.chat(AUSTRIA)
+        assert (await g.chat(AUSTRIA_AGAIN)).headers["x-tollgate-cache"] == "HIT"
+    assert verifier.calls == [
+        WARM_UP_PAIR,
+        ("what is the capital of austria", "so what is the capital of austria"),
+    ]
+
+
+async def test_a_candidate_the_check_turns_down_is_a_miss_and_its_answer_is_kept() -> None:
+    verifier = StandInVerifier(default=0.2)
+    async with gateway(verifier=verifier) as g:
+        await g.chat(AUSTRIA)
+        r = await g.chat(AUSTRIA_AGAIN)
+        assert r.headers["x-tollgate-cache"] == "MISS"
+        assert g.stats.requests == 2  # the provider answered it
+        assert len(await g.entries()) == 2  # the lookup completed: kept in its turn
+        metrics = (await g.client.get("/metrics")).text
+    assert 'tollgate_cache_lookups_total{layer="semantic",result="rejected"} 1.0' in metrics
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+async def test_a_check_that_fails_or_times_out_serves_nothing_and_stores_nothing(
+    failure: str,
+) -> None:
+    verifier = StandInVerifier()
+    async with gateway({"semantic_cache_verify_timeout_ms": 50}, verifier=verifier) as g:
+        await g.chat(AUSTRIA)
+        if failure == "error":
+            verifier.fail = True
+        else:
+            verifier.delay_s = 1.0
+        started = time.perf_counter()
+        r = await g.chat(AUSTRIA_AGAIN)
+        elapsed = time.perf_counter() - started
+        assert (r.status_code, r.headers["x-tollgate-cache"]) == (200, "MISS")
+        assert g.stats.requests == 2
+        assert len(await g.entries()) == 1  # nothing stored on the strength of it
+        metrics = (await g.client.get("/metrics")).text
+    assert f'tollgate_cache_lookups_total{{layer="semantic",result="{failure}"}} 1.0' in metrics
+    if failure == "timeout":
+        assert elapsed < 0.9  # it didn't wait for the late check
+
+
+async def test_a_request_that_finds_the_check_full_skips_it() -> None:
+    """One check at a time and no queue: a second candidate, while the first
+    is still being checked, is a miss at once and stores nothing."""
+    verifier = StandInVerifier()
+    verifier.gate = threading.Event()
+    async with gateway({"semantic_cache_queue_size": 0}, verifier=verifier) as g:
+        await g.chat(AUSTRIA)
+        first = asyncio.ensure_future(g.chat(AUSTRIA_AGAIN))
+        await asyncio.to_thread(verifier.entered.wait, 5)  # in its check
+        second = await g.chat(ask("now what is the capital of austria"))
+        assert second.headers["x-tollgate-cache"] == "MISS"
+        verifier.gate.set()
+        assert (await first).headers["x-tollgate-cache"] == "HIT"
+        assert len(await g.entries()) == 1  # the skipped lookup stored nothing
+        metrics = (await g.client.get("/metrics")).text
+    assert 'tollgate_cache_lookups_total{layer="semantic",result="full"} 1.0' in metrics
+    assert 'tollgate_cache_lookups_total{layer="semantic",result="hit"} 1.0' in metrics
+
+
+def stages(r: httpx.Response) -> tuple[set[str], dict[str, str]]:
+    timed, notes = set(), {}
+    for item in r.headers["server-timing"].split(","):
+        name, _, rest = item.strip().partition(";")
+        if rest.startswith("desc="):
+            notes[name] = rest.removeprefix("desc=")
+        else:
+            timed.add(name)
+    return timed, notes
+
+
+async def test_server_timing_reports_each_stage_and_how_the_lookup_ended() -> None:
+    async with gateway({"server_timing": True}) as g:
+        miss = await g.chat(AUSTRIA)
+        hit = await g.chat(AUSTRIA_AGAIN)
+        streamed = await g.chat({**AUSTRIA_AGAIN, "stream": True})
+    miss_stages, miss_notes = stages(miss)
+    assert {"semantic-embed-wait", "semantic-embed", "semantic-lookup"} <= miss_stages
+    assert "semantic-verify" not in miss_stages
+    assert miss_notes == {"semantic": "miss"}
+    for r in (hit, streamed):
+        hit_stages, hit_notes = stages(r)
+        assert {"semantic-embed", "semantic-lookup", "semantic-verify-wait",
+                "semantic-verify", "gateway", "total"} <= hit_stages  # fmt: skip
+        assert hit_notes == {"semantic": "hit"}
+    assert "austria" not in hit.headers["server-timing"]  # labels, never the prompt

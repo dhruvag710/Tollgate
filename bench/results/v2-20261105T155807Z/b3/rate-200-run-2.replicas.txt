@@ -1,0 +1,34 @@
+== /tollgate-bench-gateway-1
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock",status="success"} 3494.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="success"} 4904.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="provider_error"} 122.0
+tollgate_provider_attempts_total{provider="mock",result="success"} 3494.0
+tollgate_provider_attempts_total{provider="mock",result="connect_error"} 11.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="success"} 4904.0
+tollgate_provider_attempts_total{provider="mock",result="timeout"} 330.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="timeout"} 122.0
+tollgate_breaker_transitions_total{provider="mock",state="half_open"} 1.0
+tollgate_breaker_transitions_total{provider="mock",state="open"} 1.0
+    log: {"ts": "2026-11-05T16:54:42.213+00:00", "level": "WARNING", "logger": "tollgate.routing.circuit_breaker", "message": "circuit breaker for provider mock is open", "request_id": "7bdb486f-49c3-4be1-b5b5-c83a10431b0d"}
+== /tollgate-bench-gateway-2
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock",status="success"} 3493.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="success"} 4899.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="provider_error"} 133.0
+tollgate_provider_attempts_total{provider="mock",result="success"} 3493.0
+tollgate_provider_attempts_total{provider="mock",result="connect_error"} 8.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="success"} 4899.0
+tollgate_provider_attempts_total{provider="mock",result="timeout"} 332.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="timeout"} 133.0
+== /tollgate-bench-gateway-3
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock",status="success"} 3496.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="success"} 4980.0
+tollgate_requests_total{cache="BYPASS",model="gpt-4o-mini",provider="mock-secondary",status="provider_error"} 41.0
+tollgate_provider_attempts_total{provider="mock",result="success"} 3496.0
+tollgate_provider_attempts_total{provider="mock",result="connect_error"} 11.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="success"} 4980.0
+tollgate_provider_attempts_total{provider="mock",result="timeout"} 331.0
+tollgate_provider_attempts_total{provider="mock-secondary",result="timeout"} 41.0
+tollgate_breaker_transitions_total{provider="mock",state="open"} 2.0
+tollgate_breaker_transitions_total{provider="mock",state="half_open"} 1.0
+    log: {"ts": "2026-11-05T16:53:36.200+00:00", "level": "WARNING", "logger": "tollgate.routing.circuit_breaker", "message": "circuit breaker for provider mock is open", "request_id": "aa222137-1168-4f45-87ae-796c0f7850b3"}
+    log: {"ts": "2026-11-05T16:54:09.208+00:00", "level": "WARNING", "logger": "tollgate.routing.circuit_breaker", "message": "circuit breaker for provider mock is open", "request_id": "a0f471df-a1ad-4fe6-b2a3-60c16249e75f"}

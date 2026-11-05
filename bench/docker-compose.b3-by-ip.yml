@@ -1,0 +1,10 @@
+# B3's control (bench/run_v2.sh with B3_BY_IP=1): the gateways reach the mock
+# providers by IP address instead of by name, so a killed primary costs no name
+# lookups. bench/run_v2.sh writes the providers file (config/providers.test.yaml
+# with each mock's current address) before each run and sets B3_PROVIDERS_FILE.
+services:
+  gateway:
+    environment:
+      PROVIDERS_CONFIG: config/providers.by-ip.yaml
+    volumes:
+      - ${B3_PROVIDERS_FILE:?set by bench/run_v2.sh}:/app/config/providers.by-ip.yaml:ro

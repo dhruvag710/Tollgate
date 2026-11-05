@@ -52,14 +52,32 @@ class Settings(BaseSettings):
     cache_max_temperature: float = Field(default=0.3, ge=0)
     exact_cache_ttl_s: int = Field(default=86_400, ge=1)
     exact_cache_max_entry_bytes: int = Field(default=262_144, ge=1)
-    # The semantic layer (Phase 2.4): on only once both are set, from B4's
-    # evaluation (BENCHMARKS.md): the embedding model, and the similarity a
-    # match needs.
+    # The semantic layer (Phase 2.4), off by default: on only once all four of
+    # the model, the verifier and their thresholds are set, from B4's
+    # evaluation (BENCHMARKS.md: all-MiniLM-L6-v2 at 0.68, then
+    # cross-encoder/nli-deberta-v3-xsmall at 0.90). The embedding model finds
+    # the nearest entry, a candidate if its similarity is at least the
+    # threshold; the verifier, a cross-encoder, checks the candidate, which
+    # answers only if the check scores at least the verifier's threshold.
+    # Revisions pin each model's commit on the Hugging Face Hub.
     semantic_cache_model: str | None = None
+    semantic_cache_model_revision: str | None = None
     semantic_cache_threshold: float | None = Field(default=None, gt=0, le=1)
+    semantic_cache_verifier: str | None = None
+    semantic_cache_verifier_revision: str | None = None
+    semantic_cache_verifier_threshold: float | None = Field(default=None, gt=0, le=1)
     semantic_cache_ttl_s: int = Field(default=86_400, ge=1)
-    # PyTorch threads for embedding: one, as a replica runs on one CPU.
+    # PyTorch threads for each model: one, as a replica runs on one CPU.
     semantic_cache_threads: int = Field(default=1, ge=1)
+    # Each model has one thread of its own and room for this many calls waiting
+    # for it; a request that finds no room skips the layer (a miss).
+    semantic_cache_queue_size: int = Field(default=4, ge=0)
+    # How long each model's call may take, the wait for its thread included,
+    # before the request gives up on the layer (a miss that stores nothing).
+    # About five times B4's p99 for the embedding (18.5 ms) and three times the
+    # check's (309 ms): they cut off a stall, not the usual call.
+    semantic_cache_embed_timeout_ms: float = Field(default=100.0, gt=0)
+    semantic_cache_verify_timeout_ms: float = Field(default=1000.0, gt=0)
     # How often expired entries are deleted.
     semantic_cache_sweep_s: float = Field(default=300.0, gt=0)
     # The usage ledger's writer: a batch insert every interval or batch size,

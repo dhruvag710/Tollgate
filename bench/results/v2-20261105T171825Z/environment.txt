@@ -1,0 +1,51 @@
+started_utc: 20261105T171825Z
+git: 87a27ede4198431b0b7ce2d613b63534f7319bdd + uncommitted changes:
+     M .env.example
+     M .gitignore
+     M Dockerfile
+     M SPEC.md
+     M bench/cache_eval/pairs.py
+     M src/tollgate/api/v1/chat.py
+     M src/tollgate/cache/embedder.py
+     M src/tollgate/cache/semantic.py
+     M src/tollgate/config.py
+     M src/tollgate/main.py
+     M src/tollgate/observability/metrics.py
+     M src/tollgate/observability/timing.py
+     M tests/helpers.py
+     M tests/integration/test_semantic_cache.py
+     M tests/unit/test_semantic.py
+    ?? bench/b3_dns_check.sh
+    ?? bench/cache_eval/check_gateway_models.py
+    ?? bench/docker-compose.b3-by-ip.yml
+    ?? bench/docker-compose.b5.yml
+    ?? bench/k6/cache_workload.js
+    ?? bench/k6/failover.js
+    ?? bench/run_v2.sh
+    ?? bench/v2_report.py
+    ?? bench/watch_host.py
+    ?? bench/workloads/
+    ?? docker-compose.semantic.yml
+    ?? scripts/fetch_models.py
+    ?? src/tollgate/cache/pool.py
+    ?? src/tollgate/cache/verifier.py
+    ?? tests/unit/test_pool.py
+shell host: MINGW64_NT-10.0-26300 3.5.7-463ebcdc.x86_64 x86_64
+docker: client 29.6.1, server 29.6.1
+docker VM: 8 CPUs, 8140746752 bytes memory, Docker Desktop, kernel 6.18.33.2-microsoft-standard-WSL2
+parameters: PARTS="b5" B5_RATE=20 B5_PROBE_RATE=20 B5_IDLE_S=60 B5_LIMIT=0 B5_MOCK_LATENCY_MS=1000 B5_OUTPUT_TOKENS=128 B5_CONFIGS="off on" B3_RATES="300 200" B3_RUNS=3 B3_WARMUP_S=10 B3_DURATION_S=120 B3_KILL_AT_S=40
+host cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
+host cores_physical: 4
+host cores_logical: 8
+host cpu_max_mhz: 2701
+host memory_bytes: 16805040128
+host os: Windows-11-10.0.26300-SP0
+host power_plan: Balanced
+host power_mode: Best performance
+host on_battery: False
+host python: 3.13.14
+host torch: 2.15.0+cpu
+host sentence_transformers: 6.2.0
+host torch_threads: None
+host memory: committed 16,113 of 19,400 MB
+host disk free (the repository's drive): 2.9G

@@ -1,0 +1,1 @@
+{"ts": "2026-11-05T17:19:56.884+00:00", "level": "WARNING", "logger": "tollgate.main", "message": "DEV_MODE: running with the development KEY_PEPPER/ADMIN_TOKEN. Anyone can read these; never use them outside local development.", "request_id": null}

@@ -1,0 +1,28 @@
+# B5's stack (SPEC §9), on top of the benchmark stack (docker-compose.yml,
+# docker-compose.scale.yml, bench/docker-compose.bench.yml): one gateway, run
+# from the semantic image (docker-compose.semantic.yml builds it) whether the
+# layer is on or off, so the two runs differ only in the layer's settings,
+# which bench/run_v2.sh passes in from its environment: a name below with no
+# value is set in the container only if it is set in the shell.
+#
+# Every replica gets the same memory limit as with the layer on, so neither
+# run is the one that ran short of it; per-stage timings (Server-Timing) are
+# on in both.
+services:
+  gateway:
+    image: tollgate-gateway-semantic
+    environment:
+      - SERVER_TIMING=true
+      - SEMANTIC_CACHE_MODEL
+      - SEMANTIC_CACHE_MODEL_REVISION
+      - SEMANTIC_CACHE_THRESHOLD
+      - SEMANTIC_CACHE_VERIFIER
+      - SEMANTIC_CACHE_VERIFIER_REVISION
+      - SEMANTIC_CACHE_VERIFIER_THRESHOLD
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 2g}
+
+  k6:
+    volumes:
+      - ./bench/workloads/.data:/data:ro

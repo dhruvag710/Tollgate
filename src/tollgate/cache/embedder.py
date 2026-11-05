@@ -25,12 +25,14 @@ class SentenceTransformerEmbedder:
     """A sentence-transformers model on the CPU.
 
     `threads` caps PyTorch's own threads: one by default, as a gateway replica
-    runs on one CPU, and B4 measures latency the same way. Calls are made one
-    at a time: Hugging Face's fast tokenizers refuse to be used by two threads
-    at once.
+    runs on one CPU, and B4 measures latency the same way. It is applied in
+    each thread that calls the model (the gateway calls it from a pool of its
+    own, cache.pool). Calls are made one at a time: Hugging Face's fast
+    tokenizers refuse to be used by two threads at once. `revision` pins the
+    model's commit on the Hugging Face Hub (the one B4 measured).
     """
 
-    def __init__(self, model_name: str, *, threads: int = 1) -> None:
+    def __init__(self, model_name: str, *, revision: str | None = None, threads: int = 1) -> None:
         try:
             import torch
             from sentence_transformers import SentenceTransformer
@@ -39,11 +41,14 @@ class SentenceTransformerEmbedder:
                 "a semantic cache model is configured, but sentence-transformers isn't "
                 "installed: pip install '.[semantic]'"
             ) from exc
-        torch.set_num_threads(threads)
+        self._torch: Any = torch
+        self._threads = threads
+        self._configured = threading.local()
+        self._use_threads()
         self.model_name = model_name
         # Float32: a model stored in float16 (gte-small) otherwise runs in
         # float16, which a CPU computes several times slower. The upcast is exact.
-        self._model: Any = SentenceTransformer(model_name, device="cpu").float()
+        self._model: Any = SentenceTransformer(model_name, device="cpu", revision=revision).float()
         dimension = getattr(self._model, "get_embedding_dimension", None)
         dimensions = (dimension or self._model.get_sentence_embedding_dimension)()
         assert isinstance(dimensions, int)
@@ -51,11 +56,17 @@ class SentenceTransformerEmbedder:
         self._prefix = QUERY_PREFIXES.get(model_name, "")
         self._lock = threading.Lock()
 
+    def _use_threads(self) -> None:
+        if not getattr(self._configured, "done", False):
+            self._torch.set_num_threads(self._threads)
+            self._configured.done = True
+
     def embed(self, text: str) -> list[float]:
         return self.embed_many([text])[0]
 
     def embed_many(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
         with self._lock:
+            self._use_threads()
             vectors = self._model.encode(
                 [self._prefix + t for t in texts],
                 batch_size=batch_size,

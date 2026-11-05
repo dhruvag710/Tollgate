@@ -1,0 +1,13 @@
+{
+ "pairs": 500,
+ "model": "sentence-transformers/all-MiniLM-L6-v2",
+ "verifier": "cross-encoder/nli-deberta-v3-xsmall",
+ "max_similarity_difference": 2.5721567198377926e-07,
+ "max_score_difference": 7.696449756622314e-06,
+ "decisions_that_differ": [],
+ "thresholds": {
+  "similarity": 0.68,
+  "score": 0.9
+ },
+ "all_finite": true
+}

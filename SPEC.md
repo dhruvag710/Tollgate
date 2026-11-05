@@ -61,6 +61,7 @@ tollgate/
 ├── Dockerfile
 ├── docker-compose.yml             # gateway, postgres, redis, mock_provider
 ├── docker-compose.scale.yml       # 3 gateway replicas behind nginx
+├── docker-compose.semantic.yml    # v2: the semantic cache on, models baked into the image
 ├── nginx/nginx.conf
 ├── .env.example
 ├── config/
@@ -101,8 +102,10 @@ tollgate/
 │   │   └── circuit_breaker.py     # v2, state in Redis
 │   ├── cache/                     # v2
 │   │   ├── exact.py               # hash-based exact-match layer
-│   │   ├── semantic.py            # pgvector similarity layer
-│   │   ├── embedder.py
+│   │   ├── semantic.py            # pgvector similarity layer, two stages
+│   │   ├── embedder.py            # stage 1: the embedding model
+│   │   ├── verifier.py            # stage 2: the NLI cross-encoder's check
+│   │   ├── pool.py                # a bounded thread pool per model
 │   │   ├── policy.py              # what is cacheable
 │   │   └── replay.py              # cached text -> SSE chunks
 │   ├── usage/
@@ -138,11 +141,13 @@ tollgate/
 │   │   ├── eval_threshold.py
 │   │   ├── compare_embedders.py
 │   │   └── two_stage.py           # embedding model, then a cross-encoder
-│   ├── workloads/make_workload.py
-│   ├── run_all.sh
+│   ├── workloads/make_workload.py # B5's stream; b5_workload.json: its ids
+│   ├── run_all.sh                 # v1: B1, B1b, B2
+│   ├── run_v2.sh                  # v2: B5, B3 (v2_report.py: their tables)
 │   └── results/                   # raw JSON outputs, committed
 ├── scripts/
 │   ├── create_tenant.py
+│   ├── fetch_models.py            # the semantic image's models, at pinned revisions
 │   └── seed_dev.py
 └── .github/workflows/ci.yml
 ```
@@ -422,15 +427,21 @@ Prices are config values. Verify them against provider pricing pages before repo
 **Phase 2.4: Semantic cache**
 - **Cacheability policy** (`policy.py`, built in Phase 2.3 and governing both layers): only when `temperature <= 0.3` (configurable; a request without one runs at the provider's default, 1, so is never cached), `n` is 1, no tools/function calls (none offered, none in the conversation), tenant has cache enabled, and the client didn't send `X-Tollgate-Cache: bypass`
 - **Scope:** `scope_hash` = hash(model, system prompt, all messages except the last user message, params). Only the **last user message** is embedded. Entries only match within the same scope and tenant. This prevents "same question, different conversation" false hits. Concretely, the scope is the exact-match key (Phase 2.3) of the request with its last message taken out; a request whose last message isn't a user message with text is looked up in the exact layer only.
-- Lookup: top-1 by cosine similarity within scope; hit if `similarity >= threshold`. It runs only after an exact-layer miss, in Postgres (`cache_entries`, pgvector), as an exact search of the tenant's unexpired entries in that scope (found through the `(tenant_id, scope_hash)` index), so no other tenant's entries can hide or change the answer. There is no approximate index: with 3,000 of another tenant's vectors identical to the query (the same question cached by many tenants), an HNSW index filtered by tenant missed the tenant's nearest entry in most builds tested, iterative scan or not. If B5's lookup p99 misses its target, HNSW is the fallback, with that blind spot documented.
-- Threshold is chosen from the cache evaluation (section 9, B4), not by vibes. The semantic layer stays off until B4 has chosen a model and a threshold (`SEMANTIC_CACHE_MODEL`, `SEMANTIC_CACHE_THRESHOLD`).
-- B4's result (BENCHMARKS.md): no embedding model alone meets the false-hit target at any threshold, because questions with the same words in a different order embed almost identically. With an NLI cross-encoder (`cross-encoder/nli-deberta-v3-xsmall`) checking the candidate after `all-MiniLM-L6-v2` finds it, the target is met. That check isn't wired into the gateway yet, so the semantic layer stays off; the miss path's lookup and the cost of a rejected check are B5's to measure first.
-- The embedder is `sentence-transformers`, an optional install extra (`.[semantic]`), run in the gateway process off the event loop. Tests use a deterministic stand-in; only benchmarks load real models.
-- The semantic layer fails open: if the embedder or Postgres fails, the lookup is a miss, logged; a request never fails because of the cache
+- Lookup: top-1 by cosine similarity within scope, a candidate if `similarity >= threshold`, then checked (below). It runs only after an exact-layer miss, in Postgres (`cache_entries`, pgvector), as an exact search of the tenant's unexpired entries in that scope (found through the `(tenant_id, scope_hash)` index), so no other tenant's entries can hide or change the answer. There is no approximate index: with 3,000 of another tenant's vectors identical to the query (the same question cached by many tenants), an HNSW index filtered by tenant missed the tenant's nearest entry in most builds tested, iterative scan or not. If B5's lookup p99 misses its target, HNSW is the fallback, with that blind spot documented.
+- Thresholds are chosen from the cache evaluation (section 9, B4), not by vibes. The semantic layer is off by default: it stays off until its models and thresholds are set.
+- B4's result (BENCHMARKS.md): no embedding model alone meets the false-hit target at any threshold, because questions with the same words in a different order embed almost identically. With an NLI cross-encoder checking the candidate after the embedding model finds it, the target is met. So the layer has **two stages**: `all-MiniLM-L6-v2` passes the nearest entry as a candidate at a similarity of at least `SEMANTIC_CACHE_THRESHOLD` (B4: 0.68, which keeps 95% of QQP's duplicates), and `cross-encoder/nli-deberta-v3-xsmall` (`SEMANTIC_CACHE_VERIFIER`) reads the candidate's question and the request's together; it is a hit only if each entails the other, the lesser entailment probability at least `SEMANTIC_CACHE_VERIFIER_THRESHOLD` (B4: 0.90). The layer is on only when all four are set (an embedding model alone is refused: B4 found it can't meet the target); `docker-compose.semantic.yml` sets them, with each model pinned to the revision B4 measured.
+- **Each model runs in a bounded thread pool of its own** (`pool.py`), off the event loop: one thread (a replica runs on one CPU, and a model's tokenizer can't be used by two threads at once) and room for `SEMANTIC_CACHE_QUEUE_SIZE` calls waiting (default 4). Two pools, so a check, about ten times the embedding's cost, never holds up an embedding on the miss path. A request that finds a pool full skips the layer: a miss, at once.
+- **Timeouts:** each model's call, the wait for its thread included, has a timeout (`SEMANTIC_CACHE_EMBED_TIMEOUT_MS`, 100; `SEMANTIC_CACHE_VERIFY_TIMEOUT_MS`, 1000: about five and three times B4's p99s, so they cut off a stall rather than the usual call). A call that times out is a miss; its thread runs to the end, its result is thrown away, and it keeps its place in the pool until then.
+- **Nothing is served or stored on the strength of a check that didn't complete.** Only a check that returned a finite score at or above the threshold serves a hit. Only a lookup that completed (no candidate, or a candidate the check turned down) stores the request's answer in the semantic layer afterwards: one whose pool was full, or whose embedding, lookup or check failed or timed out, stores nothing there. The exact layer still stores the answer, under its own key, which no check decides.
+- Both models are loaded at startup and answer once each (in their pools' threads) before the gateway serves: a broken model stops it starting. Both live in every gateway process: with the layer on, a replica needs the raised memory limit of `docker-compose.semantic.yml`, 2 GiB (B5: a 1,420 MiB peak, file cache included, against 512 MiB without the layer).
+- Server-Timing (`SERVER_TIMING`) reports the layer's stages (`semantic-embed-wait`, `semantic-embed`, `semantic-lookup`, `semantic-verify-wait`, `semantic-verify`) and how the lookup ended (`semantic;desc=hit|miss|rejected|<stage>-full|<stage>-timeout|<stage>-error`), on cached answers too; `tollgate_cache_lookups_total{layer="semantic"}` counts the same outcomes.
+- Both models are `sentence-transformers` ones, an optional install extra (`.[semantic]`), run in the gateway process off the event loop. Tests use deterministic stand-ins; only benchmarks load real models.
+- The semantic layer fails open: if a model or Postgres fails, takes too long or has no room, the lookup is a miss, logged (by type, never the prompt); a request never fails because of the cache
 - Stream replay: cached response re-emitted as SSE chunks so streaming clients work unchanged
 - TTL per entry (default 24h); usage event records `saved_cost_usd`. A hit is free beyond RPM, as an exact-layer hit is (Phase 2.3). A miss stores its complete answer afterwards, off the response path.
 - Latency budget, split by outcome: the **miss path** (embed the question, then the Postgres lookup) must stay under 25 ms at p99, since every miss pays it before its provider call. The **hit path** (the miss path, plus any check a candidate must pass) is reported separately, with no target: a hit replaces a provider call that takes seconds.
 - ✅ Accept: miss-path p99 meets target; false-hit rate at chosen threshold meets target on the eval set
+- **Result** (BENCHMARKS.md): B4 meets the false-hit target; **B5 doesn't meet the latency target**, so the acceptance isn't met, and the layer stays off by default. On one replica (1 CPU) at 20 requests/s, the miss path's p99 was 91 and 103 ms in two runs, against 25 ms. Both halves grow under load. The exact lookup grows with the entries in scope: p99 75 ms by 7,000. The embedding shares the replica's CPU with the checks: p99 51 to 56 ms, against B4's 18.5 ms alone. HNSW, the fallback named above, would shorten only the lookup, so it hasn't been switched on. What to do about the embedding's share (more CPU for a replica with the layer on, the check at a lower priority than everything else, or a budget that allows for it) is undecided.
 
 **Phase 2.5: Sliding window limiter (comparison)**
 - Implement `sliding_window.lua` (sorted-set log), selectable per tenant
@@ -544,6 +555,20 @@ Compare on recall at 2% false-hit rate, CPU embed latency (p50/p99 per query), a
 - 5% adversarial near-misses mixed in
 
 State this workload alongside every hit-rate and cost number. Hit rate on a different workload will differ, and the README should say so.
+
+As built (`bench/workloads/make_workload.py`; only ids are committed, in `b5_workload.json`):
+- **Base:** 20,000 MS MARCO train queries in a random order, drawn with Zipf s = 1.1.
+- **Paraphrases:** an MS MARCO query has no QQP paraphrase, so these are QQP duplicate pairs of their own. The first question is asked once, and its duplicate at least 100 requests later. There are as many as make them 15% of all repeats. They come from QQP's train split, none sharing a question with B4's sample, so nothing B4 tuned on comes back.
+- **Near-misses:** 5% of requests: each of B4's 191 near-miss pairs once (the first question, then its partner at least 100 requests later), the rest word-for-word repeats of a first question.
+
+Replay (`bench/k6/cache_workload.js`, run by `bench/run_v2.sh`):
+- One gateway replica (1 CPU), at 20 requests/s, from an empty cache, with the semantic layer off and then on. The mock answers each request in 1 s (128 tokens), seeded, so every answer names the question it was first given for, and a semantic hit can be checked against what it served.
+- Alongside: B1's non-cacheable request, through the gateway and straight to the mock at once, 20/s each, first on its own and then during the replay. The difference is the gateway's overhead for requests the cache can't serve, with the layer on and off.
+- Reported, with counts: hit rates by layer and request kind, false hits, cost saved (from the ledger), latency of hits and misses, the miss path (embed, its wait, lookup) and hit path (plus the check) from Server-Timing, the rejected-candidate rate and its cost, the layer's skips, and the gateway's CPU and memory.
+
+B3 as built (`bench/k6/failover.js`, run by `bench/run_v2.sh`): B2's non-streamed request through nginx to 3 fresh replicas, 3 runs at each rate. Each run warms up for 10 s, then is measured for 120 s, with `docker kill` of the primary mock 40 s in. SPEC's 300 RPS is above both B2 ceilings (250 RPS with 1 replica, 275 with 3), so B3 also runs at 200 RPS, as B1 runs below its ceiling. Time to steady state is from the kill to the first 10 s in which no request fails and every second's p99 is within twice the pre-kill p99.
+
+B3's result (BENCHMARKS.md): the target isn't met: 37 to 96% of requests failed from the kill on at 300 RPS, and 1.3 to 2.9% at 200 RPS. Steady state never came within the 80 s after the kill. Killing a container drops its name from Docker's DNS, and a lookup of it then takes 3 to 8 s to fail. Those lookups fill the resolver threads of each gateway process (uvloop's 4), so lookups for the healthy secondary wait past its 3 s connect timeout too. In one run the secondary's own breaker opened on the timeouts. With the providers reached by IP address, the same kill failed no request. Keeping a vanished provider's name lookups from holding up the others' (for example, resolving each provider apart from the request path, or giving the lookups their own threads and a timeout below the connect timeout) is undecided.
 
 ---
 

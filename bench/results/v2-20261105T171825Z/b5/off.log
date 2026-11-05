@@ -1,0 +1,13 @@
+ Container tollgate-bench-redis-1 Running 
+ Container tollgate-bench-postgres-1 Running 
+ Container tollgate-bench-mock_provider-1 Running 
+ Container tollgate-bench-mock_provider_secondary-1 Running 
+ Container tollgate-bench-gateway-1 Running 
+ Container tollgate-bench-k6-run-9b6262b5d855 Creating 
+ Container tollgate-bench-k6-run-9b6262b5d855 Created 
+B5: 20000 requests at 20/s, probes at 20/s
+idle gateway   requests   1201  errors 0.000%  dropped 0  p50 4.11 ms  p99 6.85 ms
+idle mock      requests   1201  errors 0.000%  dropped 0  p50 1.04 ms  p99 1.37 ms
+replay         requests  20000  errors 0.000%  dropped 0  p50 3.22 ms  p99 1009.99 ms
+probe gateway  requests  20001  errors 0.000%  dropped 0  p50 5.45 ms  p99 12.71 ms
+probe mock     requests  20001  errors 0.000%  dropped 0  p50 1.03 ms  p99 1.41 ms

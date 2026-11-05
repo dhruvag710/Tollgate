@@ -1,0 +1,33 @@
+started_utc: 2026-11-05T17:14:27Z
+gateway container: /tollgate-bench-gateway-1
+resolver:  nameserver 127.0.0.11 options ndots:0  
+primary-up mock_provider 3 ms 172.19.0.5
+primary-up mock_provider 2 ms 172.19.0.5
+primary-up mock_provider 2 ms 172.19.0.5
+primary-up mock_provider 2 ms 172.19.0.5
+primary-up mock_provider 2 ms 172.19.0.5
+primary-up mock_provider_secondary 2 ms 172.19.0.4
+primary-up mock_provider_secondary 3 ms 172.19.0.4
+primary-up mock_provider_secondary 2 ms 172.19.0.4
+primary-up mock_provider_secondary 2 ms 172.19.0.4
+primary-up mock_provider_secondary 2 ms 172.19.0.4
+primary-killed mock_provider 8005 ms not found
+primary-killed mock_provider 8006 ms not found
+primary-killed mock_provider 8006 ms not found
+primary-killed mock_provider 3531 ms not found
+primary-killed mock_provider 3119 ms not found
+primary-killed mock_provider_secondary 2 ms 172.19.0.4
+primary-killed mock_provider_secondary 2 ms 172.19.0.4
+primary-killed mock_provider_secondary 2 ms 172.19.0.4
+primary-killed mock_provider_secondary 2 ms 172.19.0.4
+primary-killed mock_provider_secondary 2 ms 172.19.0.4
+primary-back mock_provider 2 ms 172.19.0.5
+primary-back mock_provider 2 ms 172.19.0.5
+primary-back mock_provider 2 ms 172.19.0.5
+primary-back mock_provider 2 ms 172.19.0.5
+primary-back mock_provider 2 ms 172.19.0.5
+primary-back mock_provider_secondary 2 ms 172.19.0.4
+primary-back mock_provider_secondary 2 ms 172.19.0.4
+primary-back mock_provider_secondary 2 ms 172.19.0.4
+primary-back mock_provider_secondary 2 ms 172.19.0.4
+primary-back mock_provider_secondary 2 ms 172.19.0.4
