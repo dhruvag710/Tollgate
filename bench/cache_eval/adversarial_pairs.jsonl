@@ -1,0 +1,240 @@
+{"id": "adv-1", "a": "What's 2+2?", "b": "What's 2+3?", "duplicate": false, "category": "number"}
+{"id": "adv-2", "a": "What is 15% of 80?", "b": "What is 15% of 90?", "duplicate": false, "category": "number"}
+{"id": "adv-3", "a": "What is the square root of 144?", "b": "What is the square root of 169?", "duplicate": false, "category": "number"}
+{"id": "adv-4", "a": "How many days are in 3 weeks?", "b": "How many days are in 5 weeks?", "duplicate": false, "category": "number"}
+{"id": "adv-5", "a": "What is 7 times 8?", "b": "What is 7 times 9?", "duplicate": false, "category": "number"}
+{"id": "adv-6", "a": "Convert 100 dollars to euros at a rate of 0.92", "b": "Convert 200 dollars to euros at a rate of 0.92", "duplicate": false, "category": "number"}
+{"id": "adv-7", "a": "What is 2 to the power of 10?", "b": "What is 2 to the power of 12?", "duplicate": false, "category": "number"}
+{"id": "adv-8", "a": "How many seconds are in 2 hours?", "b": "How many seconds are in 3 hours?", "duplicate": false, "category": "number"}
+{"id": "adv-9", "a": "What's the sum of the first 10 positive integers?", "b": "What's the sum of the first 100 positive integers?", "duplicate": false, "category": "number"}
+{"id": "adv-10", "a": "Is 91 a prime number?", "b": "Is 97 a prime number?", "duplicate": false, "category": "number"}
+{"id": "adv-11", "a": "What is 1/3 as a decimal?", "b": "What is 1/8 as a decimal?", "duplicate": false, "category": "number"}
+{"id": "adv-12", "a": "What's 25 squared?", "b": "What's 25 cubed?", "duplicate": false, "category": "number"}
+{"id": "adv-13", "a": "What is the factorial of 5?", "b": "What is the factorial of 6?", "duplicate": false, "category": "number"}
+{"id": "adv-14", "a": "What is 30 degrees in radians?", "b": "What is 45 degrees in radians?", "duplicate": false, "category": "number"}
+{"id": "adv-15", "a": "How many minutes are in a day?", "b": "How many minutes are in a week?", "duplicate": false, "category": "number"}
+{"id": "adv-16", "a": "How many bits are in a byte?", "b": "How many bits are in a kilobyte?", "duplicate": false, "category": "number"}
+{"id": "adv-17", "a": "How do I split a $120 bill between 3 people?", "b": "How do I split a $120 bill between 4 people?", "duplicate": false, "category": "number"}
+{"id": "adv-18", "a": "What's the next number in 2, 4, 8, 16?", "b": "What's the next number in 2, 4, 6, 8?", "duplicate": false, "category": "number"}
+{"id": "adv-19", "a": "What is 1000 minus 1?", "b": "What is 1000 plus 1?", "duplicate": false, "category": "number"}
+{"id": "adv-20", "a": "What is 12 divided by 4?", "b": "What is 12 divided by 3?", "duplicate": false, "category": "number"}
+{"id": "adv-21", "a": "What is 10% tip on a $45 meal?", "b": "What is 20% tip on a $45 meal?", "duplicate": false, "category": "number"}
+{"id": "adv-22", "a": "What is the 10th Fibonacci number?", "b": "What is the 12th Fibonacci number?", "duplicate": false, "category": "number"}
+{"id": "adv-23", "a": "What is the capital of Austria?", "b": "What is the capital of Australia?", "duplicate": false, "category": "entity"}
+{"id": "adv-24", "a": "What is the capital of Sweden?", "b": "What is the capital of Switzerland?", "duplicate": false, "category": "entity"}
+{"id": "adv-25", "a": "What language is spoken in Iran?", "b": "What language is spoken in Iraq?", "duplicate": false, "category": "entity"}
+{"id": "adv-26", "a": "What is the population of Slovakia?", "b": "What is the population of Slovenia?", "duplicate": false, "category": "entity"}
+{"id": "adv-27", "a": "What currency does Niger use?", "b": "What currency does Nigeria use?", "duplicate": false, "category": "entity"}
+{"id": "adv-28", "a": "What is the capital of Georgia, the country?", "b": "What is the capital of Georgia, the US state?", "duplicate": false, "category": "entity"}
+{"id": "adv-29", "a": "What is the capital of North Korea?", "b": "What is the capital of South Korea?", "duplicate": false, "category": "entity"}
+{"id": "adv-30", "a": "What is the tallest mountain in Africa?", "b": "What is the tallest mountain in Asia?", "duplicate": false, "category": "entity"}
+{"id": "adv-31", "a": "Who founded Microsoft?", "b": "Who founded Apple?", "duplicate": false, "category": "entity"}
+{"id": "adv-32", "a": "What is the longest river in Europe?", "b": "What is the longest river in South America?", "duplicate": false, "category": "entity"}
+{"id": "adv-33", "a": "Who wrote Pride and Prejudice?", "b": "Who wrote Pride and Prejudice and Zombies?", "duplicate": false, "category": "entity"}
+{"id": "adv-34", "a": "What is the boiling point of water?", "b": "What is the boiling point of ethanol?", "duplicate": false, "category": "entity"}
+{"id": "adv-35", "a": "What is the main ingredient in guacamole?", "b": "What is the main ingredient in hummus?", "duplicate": false, "category": "entity"}
+{"id": "adv-36", "a": "Who painted The Starry Night?", "b": "Who painted The Scream?", "duplicate": false, "category": "entity"}
+{"id": "adv-37", "a": "What is the chemical symbol for gold?", "b": "What is the chemical symbol for silver?", "duplicate": false, "category": "entity"}
+{"id": "adv-38", "a": "How do you say thank you in Japanese?", "b": "How do you say thank you in Chinese?", "duplicate": false, "category": "entity"}
+{"id": "adv-39", "a": "What is the national animal of Scotland?", "b": "What is the national animal of Wales?", "duplicate": false, "category": "entity"}
+{"id": "adv-40", "a": "What's the area code for Boston?", "b": "What's the area code for Austin?", "duplicate": false, "category": "entity"}
+{"id": "adv-41", "a": "What does DNA stand for?", "b": "What does RNA stand for?", "duplicate": false, "category": "entity"}
+{"id": "adv-42", "a": "What is the speed of sound in air?", "b": "What is the speed of sound in water?", "duplicate": false, "category": "entity"}
+{"id": "adv-43", "a": "What is the official language of Austria?", "b": "What is the official language of Australia?", "duplicate": false, "category": "entity"}
+{"id": "adv-44", "a": "Which country is Kyoto in?", "b": "Which country is Kyiv in?", "duplicate": false, "category": "entity"}
+{"id": "adv-45", "a": "How do I start a Docker container?", "b": "How do I stop a Docker container?", "duplicate": false, "category": "action"}
+{"id": "adv-46", "a": "How do I enable SSH on Ubuntu?", "b": "How do I disable SSH on Ubuntu?", "duplicate": false, "category": "action"}
+{"id": "adv-47", "a": "How do I install Node.js on Windows?", "b": "How do I uninstall Node.js on Windows?", "duplicate": false, "category": "action"}
+{"id": "adv-48", "a": "How do I encrypt a file with GPG?", "b": "How do I decrypt a file with GPG?", "duplicate": false, "category": "action"}
+{"id": "adv-49", "a": "How do I import a CSV into PostgreSQL?", "b": "How do I export a PostgreSQL table to CSV?", "duplicate": false, "category": "action"}
+{"id": "adv-50", "a": "How do I push a branch to GitHub?", "b": "How do I delete a branch on GitHub?", "duplicate": false, "category": "action"}
+{"id": "adv-51", "a": "How do I add a user to a group in Linux?", "b": "How do I remove a user from a group in Linux?", "duplicate": false, "category": "action"}
+{"id": "adv-52", "a": "How do I zip a folder on macOS?", "b": "How do I unzip a folder on macOS?", "duplicate": false, "category": "action"}
+{"id": "adv-53", "a": "How do I mount a USB drive in Linux?", "b": "How do I unmount a USB drive in Linux?", "duplicate": false, "category": "action"}
+{"id": "adv-54", "a": "How do I increase the font size in VS Code?", "b": "How do I decrease the font size in VS Code?", "duplicate": false, "category": "action"}
+{"id": "adv-55", "a": "How do I lock my screen on Windows?", "b": "How do I unlock my screen on Windows?", "duplicate": false, "category": "action"}
+{"id": "adv-56", "a": "How do I follow someone on Instagram?", "b": "How do I unfollow someone on Instagram?", "duplicate": false, "category": "action"}
+{"id": "adv-57", "a": "How do I compress a PDF?", "b": "How do I split a PDF?", "duplicate": false, "category": "action"}
+{"id": "adv-58", "a": "How do I subscribe to a YouTube channel?", "b": "How do I unsubscribe from a YouTube channel?", "duplicate": false, "category": "action"}
+{"id": "adv-59", "a": "How do I upload a file to S3 with the AWS CLI?", "b": "How do I download a file from S3 with the AWS CLI?", "duplicate": false, "category": "action"}
+{"id": "adv-60", "a": "How do I serialize an object to JSON in Python?", "b": "How do I deserialize JSON into an object in Python?", "duplicate": false, "category": "action"}
+{"id": "adv-61", "a": "How do I open a port in the Windows firewall?", "b": "How do I block a port in the Windows firewall?", "duplicate": false, "category": "action"}
+{"id": "adv-62", "a": "How do I merge two branches in git?", "b": "How do I rebase one branch onto another in git?", "duplicate": false, "category": "action"}
+{"id": "adv-63", "a": "How do I freeze the top row in Excel?", "b": "How do I unfreeze the top row in Excel?", "duplicate": false, "category": "action"}
+{"id": "adv-64", "a": "How do I hide a column in Excel?", "b": "How do I delete a column in Excel?", "duplicate": false, "category": "action"}
+{"id": "adv-65", "a": "How do I turn on dark mode in Chrome?", "b": "How do I turn off dark mode in Chrome?", "duplicate": false, "category": "action"}
+{"id": "adv-66", "a": "How do I pause a Windows update?", "b": "How do I resume a Windows update?", "duplicate": false, "category": "action"}
+{"id": "adv-67", "a": "Can I take ibuprofen with food?", "b": "Can I take ibuprofen without food?", "duplicate": false, "category": "negation"}
+{"id": "adv-68", "a": "Why does my code compile?", "b": "Why doesn't my code compile?", "duplicate": false, "category": "negation"}
+{"id": "adv-69", "a": "What can I eat when I'm pregnant?", "b": "What can't I eat when I'm pregnant?", "duplicate": false, "category": "negation"}
+{"id": "adv-70", "a": "Which programming languages are statically typed?", "b": "Which programming languages are not statically typed?", "duplicate": false, "category": "negation"}
+{"id": "adv-72", "a": "Why is my laptop charging slowly?", "b": "Why is my laptop not charging at all?", "duplicate": false, "category": "negation"}
+{"id": "adv-73", "a": "Which fruits are acidic?", "b": "Which fruits are not acidic?", "duplicate": false, "category": "negation"}
+{"id": "adv-74", "a": "What are the symptoms of dehydration?", "b": "What are the symptoms of overhydration?", "duplicate": false, "category": "negation"}
+{"id": "adv-75", "a": "When should I use a semicolon?", "b": "When should I not use a semicolon?", "duplicate": false, "category": "negation"}
+{"id": "adv-76", "a": "Which vitamins are fat-soluble?", "b": "Which vitamins are water-soluble?", "duplicate": false, "category": "negation"}
+{"id": "adv-77", "a": "Is zero an even number?", "b": "Is zero an odd number?", "duplicate": false, "category": "negation"}
+{"id": "adv-78", "a": "Should I stretch before running?", "b": "Should I stretch after running?", "duplicate": false, "category": "negation"}
+{"id": "adv-79", "a": "Is it legal to drive without a license?", "b": "Is it legal to drive with an expired license?", "duplicate": false, "category": "negation"}
+{"id": "adv-80", "a": "Which houseplants need direct sunlight?", "b": "Which houseplants don't need direct sunlight?", "duplicate": false, "category": "negation"}
+{"id": "adv-81", "a": "What should I feed my dog?", "b": "What shouldn't I feed my dog?", "duplicate": false, "category": "negation"}
+{"id": "adv-82", "a": "Which foods are high in fiber?", "b": "Which foods are low in fiber?", "duplicate": false, "category": "negation"}
+{"id": "adv-84", "a": "Which countries require a visa for US citizens?", "b": "Which countries don't require a visa for US citizens?", "duplicate": false, "category": "negation"}
+{"id": "adv-85", "a": "What are reasons to buy a house?", "b": "What are reasons not to buy a house?", "duplicate": false, "category": "negation"}
+{"id": "adv-86", "a": "Which mushrooms are poisonous?", "b": "Which mushrooms are not poisonous?", "duplicate": false, "category": "negation"}
+{"id": "adv-87", "a": "How many kilometers is a marathon?", "b": "How many miles is a marathon?", "duplicate": false, "category": "unit"}
+{"id": "adv-88", "a": "What is 30 degrees Celsius in Fahrenheit?", "b": "What is 30 degrees Fahrenheit in Celsius?", "duplicate": false, "category": "unit"}
+{"id": "adv-89", "a": "How many grams are in a pound?", "b": "How many grams are in an ounce?", "duplicate": false, "category": "unit"}
+{"id": "adv-90", "a": "How many megabytes are in a gigabyte?", "b": "How many kilobytes are in a gigabyte?", "duplicate": false, "category": "unit"}
+{"id": "adv-91", "a": "How many liters are in a gallon?", "b": "How many liters are in a quart?", "duplicate": false, "category": "unit"}
+{"id": "adv-92", "a": "What is 5 feet 10 inches in centimeters?", "b": "What is 5 feet 10 inches in meters?", "duplicate": false, "category": "unit"}
+{"id": "adv-93", "a": "What is 100 km/h in mph?", "b": "What is 100 mph in km/h?", "duplicate": false, "category": "unit"}
+{"id": "adv-94", "a": "How many teaspoons are in a tablespoon?", "b": "How many teaspoons are in a cup?", "duplicate": false, "category": "unit"}
+{"id": "adv-95", "a": "How many calories are in a gram of fat?", "b": "How many calories are in a gram of protein?", "duplicate": false, "category": "unit"}
+{"id": "adv-96", "a": "How many square feet are in an acre?", "b": "How many square meters are in an acre?", "duplicate": false, "category": "unit"}
+{"id": "adv-97", "a": "How much does a gallon of water weigh in pounds?", "b": "How much does a gallon of water weigh in kilograms?", "duplicate": false, "category": "unit"}
+{"id": "adv-98", "a": "What is 1 nautical mile in kilometers?", "b": "What is 1 mile in kilometers?", "duplicate": false, "category": "unit"}
+{"id": "adv-99", "a": "How many hours are in a year?", "b": "How many hours are in a leap year?", "duplicate": false, "category": "unit"}
+{"id": "adv-100", "a": "What is room temperature in Kelvin?", "b": "What is room temperature in Fahrenheit?", "duplicate": false, "category": "unit"}
+{"id": "adv-101", "a": "How many cups are in a pint?", "b": "How many cups are in a quart?", "duplicate": false, "category": "unit"}
+{"id": "adv-102", "a": "How many gigabytes are in a terabyte?", "b": "How many gibibytes are in a tebibyte?", "duplicate": false, "category": "unit"}
+{"id": "adv-103", "a": "How many millimeters are in an inch?", "b": "How many centimeters are in an inch?", "duplicate": false, "category": "unit"}
+{"id": "adv-104", "a": "What is 1 atmosphere in pascals?", "b": "What is 1 atmosphere in psi?", "duplicate": false, "category": "unit"}
+{"id": "adv-105", "a": "Who won the World Cup in 2014?", "b": "Who won the World Cup in 2018?", "duplicate": false, "category": "year"}
+{"id": "adv-106", "a": "Who won the Oscar for Best Picture in 2020?", "b": "Who won the Oscar for Best Picture in 2021?", "duplicate": false, "category": "year"}
+{"id": "adv-107", "a": "What happened in Berlin in 1989?", "b": "What happened in Berlin in 1961?", "duplicate": false, "category": "year"}
+{"id": "adv-108", "a": "What was the population of the US in 1950?", "b": "What was the population of the US in 2000?", "duplicate": false, "category": "year"}
+{"id": "adv-109", "a": "Who was president of the United States in 1990?", "b": "Who was president of the United States in 2010?", "duplicate": false, "category": "year"}
+{"id": "adv-110", "a": "What were the major events of the 19th century?", "b": "What were the major events of the 20th century?", "duplicate": false, "category": "year"}
+{"id": "adv-111", "a": "When does daylight saving time start in the US?", "b": "When does daylight saving time end in the US?", "duplicate": false, "category": "year"}
+{"id": "adv-112", "a": "What day of the week was January 1, 2000?", "b": "What day of the week was January 1, 2001?", "duplicate": false, "category": "year"}
+{"id": "adv-113", "a": "What were the top songs of 1985?", "b": "What were the top songs of 1995?", "duplicate": false, "category": "year"}
+{"id": "adv-114", "a": "When did World War I start?", "b": "When did World War II start?", "duplicate": false, "category": "year"}
+{"id": "adv-115", "a": "When did World War II start?", "b": "When did World War II end?", "duplicate": false, "category": "year"}
+{"id": "adv-116", "a": "What changed in Python 3.11?", "b": "What changed in Python 3.12?", "duplicate": false, "category": "year"}
+{"id": "adv-117", "a": "What was the US inflation rate in 2008?", "b": "What was the US inflation rate in 2022?", "duplicate": false, "category": "year"}
+{"id": "adv-118", "a": "Who won the Super Bowl in 2016?", "b": "Who won the Super Bowl in 2017?", "duplicate": false, "category": "year"}
+{"id": "adv-119", "a": "What's the weather usually like in Tokyo in January?", "b": "What's the weather usually like in Tokyo in July?", "duplicate": false, "category": "year"}
+{"id": "adv-120", "a": "What time is sunrise in London in December?", "b": "What time is sunrise in London in June?", "duplicate": false, "category": "year"}
+{"id": "adv-121", "a": "What was the tallest building in the world in 1990?", "b": "What was the tallest building in the world in 2020?", "duplicate": false, "category": "year"}
+{"id": "adv-122", "a": "Who won the Nobel Peace Prize in 2009?", "b": "Who won the Nobel Peace Prize in 2019?", "duplicate": false, "category": "year"}
+{"id": "adv-123", "a": "What is the largest country by area?", "b": "What is the smallest country by area?", "duplicate": false, "category": "comparison"}
+{"id": "adv-124", "a": "Who was the first president of the United States?", "b": "Who was the second president of the United States?", "duplicate": false, "category": "comparison"}
+{"id": "adv-125", "a": "What is the fastest land animal?", "b": "What is the slowest land animal?", "duplicate": false, "category": "comparison"}
+{"id": "adv-126", "a": "Which planet is closest to the sun?", "b": "Which planet is farthest from the sun?", "duplicate": false, "category": "comparison"}
+{"id": "adv-127", "a": "What is the most spoken language in the world?", "b": "What is the second most spoken language in the world?", "duplicate": false, "category": "comparison"}
+{"id": "adv-128", "a": "What is the highest-grossing film of all time?", "b": "What is the second highest-grossing film of all time?", "duplicate": false, "category": "comparison"}
+{"id": "adv-129", "a": "What is the deepest lake in the world?", "b": "What is the largest lake in the world?", "duplicate": false, "category": "comparison"}
+{"id": "adv-130", "a": "What day comes before Monday?", "b": "What day comes after Monday?", "duplicate": false, "category": "comparison"}
+{"id": "adv-131", "a": "What is the hottest planet in the solar system?", "b": "What is the coldest planet in the solar system?", "duplicate": false, "category": "comparison"}
+{"id": "adv-132", "a": "What's the oldest university in the world?", "b": "What's the oldest university in the United States?", "duplicate": false, "category": "comparison"}
+{"id": "adv-133", "a": "What is the maximum value of a 32-bit signed integer?", "b": "What is the minimum value of a 32-bit signed integer?", "duplicate": false, "category": "comparison"}
+{"id": "adv-134", "a": "What is the most populous city in Canada?", "b": "What is the capital city of Canada?", "duplicate": false, "category": "comparison"}
+{"id": "adv-135", "a": "Who is older, Venus or Serena Williams?", "b": "Who is younger, Venus or Serena Williams?", "duplicate": false, "category": "comparison"}
+{"id": "adv-136", "a": "What is the hardest mineral?", "b": "What is the softest mineral?", "duplicate": false, "category": "comparison"}
+{"id": "adv-137", "a": "Which ocean is the largest?", "b": "Which ocean is the smallest?", "duplicate": false, "category": "comparison"}
+{"id": "adv-138", "a": "What is the most common blood type?", "b": "What is the rarest blood type?", "duplicate": false, "category": "comparison"}
+{"id": "adv-139", "a": "What's the earliest age you can claim US Social Security?", "b": "What's the latest age you can claim US Social Security?", "duplicate": false, "category": "comparison"}
+{"id": "adv-140", "a": "What is the upper limit of normal blood pressure?", "b": "What is the lower limit of normal blood pressure?", "duplicate": false, "category": "comparison"}
+{"id": "adv-141", "a": "What is the longest bone in the human body?", "b": "What is the shortest bone in the human body?", "duplicate": false, "category": "comparison"}
+{"id": "adv-142", "a": "Which is the brightest star in the night sky?", "b": "Which is the second brightest star in the night sky?", "duplicate": false, "category": "comparison"}
+{"id": "adv-143", "a": "How do I reverse a string in Python?", "b": "How do I reverse a string in JavaScript?", "duplicate": false, "category": "technical"}
+{"id": "adv-144", "a": "How do I read a file line by line in Java?", "b": "How do I read a file line by line in Go?", "duplicate": false, "category": "technical"}
+{"id": "adv-145", "a": "How do I center a div horizontally in CSS?", "b": "How do I center a div vertically in CSS?", "duplicate": false, "category": "technical"}
+{"id": "adv-146", "a": "What's the difference between TCP and UDP?", "b": "What's the difference between HTTP and HTTPS?", "duplicate": false, "category": "technical"}
+{"id": "adv-147", "a": "How do I sort a list in Python in ascending order?", "b": "How do I sort a list in Python in descending order?", "duplicate": false, "category": "technical"}
+{"id": "adv-148", "a": "What's the default port for PostgreSQL?", "b": "What's the default port for MySQL?", "duplicate": false, "category": "technical"}
+{"id": "adv-149", "a": "How do I check the version of Node.js?", "b": "How do I check the version of npm?", "duplicate": false, "category": "technical"}
+{"id": "adv-150", "a": "How do I create a virtual environment with venv?", "b": "How do I create a virtual environment with conda?", "duplicate": false, "category": "technical"}
+{"id": "adv-151", "a": "How do I list all running processes in Linux?", "b": "How do I list all running processes in Windows?", "duplicate": false, "category": "technical"}
+{"id": "adv-152", "a": "What does HTTP status 404 mean?", "b": "What does HTTP status 403 mean?", "duplicate": false, "category": "technical"}
+{"id": "adv-153", "a": "What does HTTP status 500 mean?", "b": "What does HTTP status 503 mean?", "duplicate": false, "category": "technical"}
+{"id": "adv-154", "a": "How do I get the length of an array in JavaScript?", "b": "How do I get the length of an array in Bash?", "duplicate": false, "category": "technical"}
+{"id": "adv-155", "a": "What is the worst-case time complexity of quicksort?", "b": "What is the worst-case time complexity of merge sort?", "duplicate": false, "category": "technical"}
+{"id": "adv-156", "a": "What's the keyboard shortcut to copy on a Mac?", "b": "What's the keyboard shortcut to paste on a Mac?", "duplicate": false, "category": "technical"}
+{"id": "adv-157", "a": "How do I undo the last git commit?", "b": "How do I undo the last git push?", "duplicate": false, "category": "technical"}
+{"id": "adv-158", "a": "How many bytes is an int in C on 64-bit Linux?", "b": "How many bytes is a long in C on 64-bit Linux?", "duplicate": false, "category": "technical"}
+{"id": "adv-159", "a": "What is the IPv4 loopback address?", "b": "What is the IPv6 loopback address?", "duplicate": false, "category": "technical"}
+{"id": "adv-160", "a": "How do I make a GET request with curl?", "b": "How do I make a POST request with curl?", "duplicate": false, "category": "technical"}
+{"id": "adv-161", "a": "What's the SQL to delete duplicate rows?", "b": "What's the SQL to find duplicate rows?", "duplicate": false, "category": "technical"}
+{"id": "adv-162", "a": "How do I declare a constant in C?", "b": "How do I declare a constant in Rust?", "duplicate": false, "category": "technical"}
+{"id": "adv-163", "a": "What port does HTTP use by default?", "b": "What port does HTTPS use by default?", "duplicate": false, "category": "technical"}
+{"id": "adv-164", "a": "How do I convert a string to an integer in Python?", "b": "How do I convert an integer to a string in Python?", "duplicate": false, "category": "reversal"}
+{"id": "adv-165", "a": "How do I convert JSON to YAML?", "b": "How do I convert YAML to JSON?", "duplicate": false, "category": "reversal"}
+{"id": "adv-167", "a": "Is Python faster than Java?", "b": "Is Java faster than Python?", "duplicate": false, "category": "reversal"}
+{"id": "adv-168", "a": "What is the exchange rate from USD to EUR?", "b": "What is the exchange rate from EUR to USD?", "duplicate": false, "category": "reversal"}
+{"id": "adv-169", "a": "How do I transfer money from PayPal to my bank account?", "b": "How do I transfer money from my bank account to PayPal?", "duplicate": false, "category": "reversal"}
+{"id": "adv-170", "a": "How do I migrate from MySQL to PostgreSQL?", "b": "How do I migrate from PostgreSQL to MySQL?", "duplicate": false, "category": "reversal"}
+{"id": "adv-171", "a": "What's the flight time from New York to London?", "b": "What's the flight time from London to New York?", "duplicate": false, "category": "reversal"}
+{"id": "adv-172", "a": "How do I switch from Android to iPhone?", "b": "How do I switch from iPhone to Android?", "duplicate": false, "category": "reversal"}
+{"id": "adv-173", "a": "How do I convert a PNG to a JPG?", "b": "How do I convert a JPG to a PNG?", "duplicate": false, "category": "reversal"}
+{"id": "adv-174", "a": "How do I cast a float to an int in C?", "b": "How do I cast an int to a float in C?", "duplicate": false, "category": "reversal"}
+{"id": "adv-175", "a": "How do I convert Celsius to Fahrenheit?", "b": "How do I convert Fahrenheit to Celsius?", "duplicate": false, "category": "reversal"}
+{"id": "adv-176", "a": "Is a crocodile bigger than an alligator?", "b": "Is an alligator bigger than a crocodile?", "duplicate": false, "category": "reversal"}
+{"id": "adv-177", "a": "Can a Mac read an NTFS drive?", "b": "Can Windows read an APFS drive?", "duplicate": false, "category": "reversal"}
+{"id": "adv-178", "a": "How do I translate 'good morning' into Spanish?", "b": "How do I translate 'buenos días' into English?", "duplicate": false, "category": "reversal"}
+{"id": "adv-179", "a": "How do I delete one row in pandas?", "b": "How do I delete all rows in pandas?", "duplicate": false, "category": "scope"}
+{"id": "adv-180", "a": "How do I select the first row in SQL?", "b": "How do I select the last row in SQL?", "duplicate": false, "category": "scope"}
+{"id": "adv-181", "a": "What are the side effects of aspirin in children?", "b": "What are the side effects of aspirin in adults?", "duplicate": false, "category": "scope"}
+{"id": "adv-182", "a": "What's a good gift for a 5-year-old?", "b": "What's a good gift for a 50-year-old?", "duplicate": false, "category": "scope"}
+{"id": "adv-183", "a": "How much water should a cat drink a day?", "b": "How much water should a dog drink a day?", "duplicate": false, "category": "scope"}
+{"id": "adv-184", "a": "What is the recommended daily dose of vitamin D for infants?", "b": "What is the recommended daily dose of vitamin D for adults?", "duplicate": false, "category": "scope"}
+{"id": "adv-185", "a": "How do I replace the first occurrence of a word in a Python string?", "b": "How do I replace every occurrence of a word in a Python string?", "duplicate": false, "category": "scope"}
+{"id": "adv-186", "a": "What's the minimum wage in California?", "b": "What's the minimum wage in Texas?", "duplicate": false, "category": "scope"}
+{"id": "adv-187", "a": "How long should I boil a soft-boiled egg?", "b": "How long should I boil a hard-boiled egg?", "duplicate": false, "category": "scope"}
+{"id": "adv-188", "a": "How do I cook rice in a pot?", "b": "How do I cook rice in a microwave?", "duplicate": false, "category": "scope"}
+{"id": "adv-189", "a": "How do I find the size of a file in Linux?", "b": "How do I find the size of a directory in Linux?", "duplicate": false, "category": "scope"}
+{"id": "adv-190", "a": "What is the treatment for a first-degree burn?", "b": "What is the treatment for a third-degree burn?", "duplicate": false, "category": "scope"}
+{"id": "adv-191", "a": "When is the best time to visit Japan for cherry blossoms?", "b": "When is the best time to visit Japan for autumn leaves?", "duplicate": false, "category": "scope"}
+{"id": "adv-192", "a": "How do I get a visa to work in Canada?", "b": "How do I get a visa to study in Canada?", "duplicate": false, "category": "scope"}
+{"id": "adv-193", "a": "How long does it take to drive across Texas?", "b": "How long does it take to drive across Rhode Island?", "duplicate": false, "category": "scope"}
+{"id": "adv-194", "a": "How do I delete one of my Facebook posts?", "b": "How do I delete all of my Facebook posts?", "duplicate": false, "category": "scope"}
+{"id": "adv-195", "a": "What is the capital of Austria?", "b": "Which city is the seat of Austria's government?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-196", "a": "How do I reverse a list in Python?", "b": "What's the way to flip the order of a Python list's elements?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-197", "a": "How many days are there in a leap year?", "b": "A year with a February 29th has how many days?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-198", "a": "What's the boiling point of water at sea level?", "b": "At what temperature does water start to boil at sea level?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-199", "a": "Who wrote Romeo and Juliet?", "b": "Which playwright is the author of Romeo and Juliet?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-200", "a": "How do I stop a Docker container?", "b": "What command halts a running Docker container?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-201", "a": "What is the square root of 144?", "b": "Which number multiplied by itself gives 144?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-202", "a": "How do I check which version of Python I have?", "b": "What command tells me my installed Python version?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-203", "a": "How do I undo my last git commit but keep the changes?", "b": "Can I revert the most recent commit in git without losing my edits?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-204", "a": "What is the largest ocean on Earth?", "b": "Which ocean covers the most area on the planet?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-205", "a": "How many continents are there?", "b": "What's the number of continents on Earth?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-206", "a": "How do I make a GET request with curl?", "b": "Using curl, how can I fetch a URL with HTTP GET?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-207", "a": "What's the chemical formula for water?", "b": "Which molecular formula describes water?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-208", "a": "How do I exit vim?", "b": "What keys do I press to quit the vim editor?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-209", "a": "What does CPU stand for?", "b": "Expand the abbreviation CPU.", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-210", "a": "How long does it take light from the Sun to reach Earth?", "b": "What is the travel time of sunlight to our planet?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-211", "a": "What is the tallest mountain in the world?", "b": "Which peak on Earth has the highest elevation?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-212", "a": "How do I convert a string to lowercase in JavaScript?", "b": "In JS, how can I make every character of a string a small letter?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-214", "a": "How do I center text in CSS?", "b": "Which CSS property aligns text to the middle horizontally?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-215", "a": "How many bones are in the adult human body?", "b": "What is the bone count of a grown human skeleton?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-216", "a": "Who painted the Mona Lisa?", "b": "Which artist created the Mona Lisa?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-217", "a": "What's the fastest land animal?", "b": "Which animal runs quicker than any other on land?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-218", "a": "How do I list the files in a directory in Linux?", "b": "What command shows a folder's contents on Linux?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-219", "a": "What's the speed of light?", "b": "How fast does light travel?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-220", "a": "What is the currency of Japan?", "b": "What money do people use in Japan?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-221", "a": "How do I install a Python package?", "b": "What's the pip command to add a library to my Python environment?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-222", "a": "What is photosynthesis?", "b": "How do plants turn sunlight into food?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-223", "a": "How many players are on a soccer team on the field?", "b": "How many people does a football side field during a match?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-224", "a": "What's the freezing point of water in Fahrenheit?", "b": "At how many degrees Fahrenheit does water turn to ice?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-225", "a": "How do I take a screenshot on Windows?", "b": "What's the keyboard shortcut to capture my screen in Windows?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-226", "a": "When did humans first land on the Moon?", "b": "What year was the Apollo 11 Moon landing?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-227", "a": "How do I delete a branch in git?", "b": "What command removes a git branch?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-228", "a": "What's the population of Canada?", "b": "How many people live in Canada?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-229", "a": "What does HTTP stand for?", "b": "What is the full form of HTTP?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-230", "a": "How do I find the length of a list in Python?", "b": "Which Python function tells me how many items a list has?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-231", "a": "What's the smallest prime number?", "b": "Which prime number is the lowest?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-232", "a": "How do I turn on Bluetooth on an iPhone?", "b": "Where do I enable Bluetooth on my iPhone?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-233", "a": "What is the main language spoken in Brazil?", "b": "Brazilians mostly speak which language?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-234", "a": "How many hours of sleep does an adult need?", "b": "What's the recommended nightly sleep duration for grown-ups?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-235", "a": "How do I convert Celsius to Fahrenheit?", "b": "What's the formula to change a temperature from Celsius into Fahrenheit?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-236", "a": "How do I print to the console in Java?", "b": "What's the Java statement for writing output to standard out?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-237", "a": "Who discovered penicillin?", "b": "Which scientist found penicillin?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-238", "a": "What's the distance from the Earth to the Moon?", "b": "How far away is the Moon from our planet?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-239", "a": "How do I check disk space on Linux?", "b": "What command shows free storage on a Linux machine?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-240", "a": "What's the time complexity of binary search?", "b": "How does the running time of binary search grow with input size?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-241", "a": "How do I make a new directory in Linux?", "b": "What command creates a folder on Linux?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-242", "a": "What is the largest desert in the world?", "b": "Which desert covers the greatest area on Earth?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-243", "a": "How do I create a virtual environment in Python?", "b": "How can I set up an isolated Python environment for a project with venv?", "duplicate": true, "category": "paraphrase"}
+{"id": "adv-244", "a": "What's the tallest building in the world?", "b": "Which skyscraper is the highest on the planet?", "duplicate": true, "category": "paraphrase"}

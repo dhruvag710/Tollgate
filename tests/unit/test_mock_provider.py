@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from mock_provider import app as mock_app_module
 from mock_provider.app import (
     VOCAB,
     Behaviour,
@@ -46,6 +47,15 @@ def _parse_sse(text: str) -> list[Any]:
 
 
 # --- determinism (the acceptance criterion) --------------------------------
+
+
+def test_tokenizers_load_when_the_mock_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not on the first request, which a burst of first requests would all wait
+    for: long enough, on a busy machine, to time C4's provider out."""
+    loaded: list[str] = []
+    monkeypatch.setattr(mock_app_module, "_encoding", lambda model: loaded.append(model))
+    create_app(env={"MOCK_MODELS": "gpt-4o-mini,llama3.1:8b"})
+    assert loaded == ["gpt-4o-mini", "llama3.1:8b"]
 
 
 async def test_same_seed_same_output_across_instances() -> None:

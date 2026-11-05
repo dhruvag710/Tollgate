@@ -9,3 +9,6 @@ coverage.xml
 htmlcov/
 .env
 CLAUDE.md
+
+# B4: downloaded QQP data, never committed (bench/cache_eval/pairs.py)
+bench/cache_eval/.data/

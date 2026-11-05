@@ -114,6 +114,20 @@ class Metrics:
             ["provider", "result"],
             registry=registry,
         )
+        self.cache_lookups = Counter(
+            "tollgate_cache_lookups",
+            "Response cache lookups, by layer (exact, semantic) and result (hit, miss, "
+            "error: the semantic layer failed and counted as a miss).",
+            ["layer", "result"],
+            registry=registry,
+        )
+        self.semantic_similarity = Histogram(
+            "tollgate_semantic_cache_similarity",
+            "Semantic lookups that found an entry in scope: its cosine similarity to the "
+            "question, hit or not. Where the threshold falls among real questions.",
+            buckets=(0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.92, 0.94, 0.96, 0.98, 0.99, 1.0),
+            registry=registry,
+        )
         self.breaker_transitions = Counter(
             "tollgate_breaker_transitions",
             "Circuit breaker state changes this replica made, by the state entered. The "
@@ -133,6 +147,18 @@ class Metrics:
         self.provider_attempts.labels(
             self._provider(provider), result if result in ATTEMPT_RESULTS else OTHER
         ).inc()
+
+    def cache_lookup(self, layer: str, result: str) -> None:
+        self.cache_lookups.labels(layer, result).inc()
+
+    def semantic_lookup(
+        self, hit: bool, embedding: list[float] | None, similarity: float | None
+    ) -> None:
+        """A semantic lookup: a hit, a miss, or (no embedding) a failure."""
+        result = "hit" if hit else "miss" if embedding is not None else "error"
+        self.cache_lookup("semantic", result)
+        if similarity is not None:
+            self.semantic_similarity.observe(similarity)
 
     def breaker_transition(self, provider: str, state: str) -> None:
         self.breaker_transitions.labels(

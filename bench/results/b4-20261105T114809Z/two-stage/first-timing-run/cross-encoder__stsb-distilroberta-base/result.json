@@ -1,0 +1,93 @@
+{
+ "model": "cross-encoder/stsb-distilroberta-base",
+ "kind": "sts",
+ "trained_on": "STS benchmark",
+ "load_s": 0.5117396999994526,
+ "memory_bytes": 365993984,
+ "scoring_s": 128.99031629999809,
+ "torch_threads": 1,
+ "verify_ms": {
+  "p50": 46.271400002297014,
+  "p99": 172.6054080014364,
+  "queries": 500,
+  "machine": {
+   "system_busy_percent": 15.7,
+   "cpu_mhz_min": 48,
+   "cpu_mhz_limit_min": 0,
+   "cpu_mhz_max": 2701,
+   "samples": 22,
+   "on_battery": false,
+   "flags": [
+    "clock limited to 0 of 2701 MHz",
+    "fastest core fell to 48 of 2701 MHz"
+   ]
+  }
+ },
+ "hit_path_ms": {
+  "BAAI/bge-small-en-v1.5": {
+   "p50": 61.712599997918005,
+   "p99": 121.91460999896655,
+   "queries": 500,
+   "machine": {
+    "system_busy_percent": 14.8,
+    "cpu_mhz_min": 2701,
+    "cpu_mhz_limit_min": 2701,
+    "cpu_mhz_max": 2701,
+    "samples": 22,
+    "on_battery": false,
+    "flags": []
+   }
+  },
+  "sentence-transformers/all-MiniLM-L6-v2": {
+   "p50": 55.52295000234153,
+   "p99": 208.89724299984664,
+   "queries": 500,
+   "machine": {
+    "system_busy_percent": 16.4,
+    "cpu_mhz_min": 48,
+    "cpu_mhz_limit_min": 0,
+    "cpu_mhz_max": 2701,
+    "samples": 22,
+    "on_battery": false,
+    "flags": [
+     "clock limited to 0 of 2701 MHz",
+     "fastest core fell to 48 of 2701 MHz"
+    ]
+   }
+  },
+  "intfloat/e5-small-v2": {
+   "p50": 62.55704999966838,
+   "p99": 230.183174999911,
+   "queries": 500,
+   "machine": {
+    "system_busy_percent": 14.7,
+    "cpu_mhz_min": 48,
+    "cpu_mhz_limit_min": 0,
+    "cpu_mhz_max": 2701,
+    "samples": 22,
+    "on_battery": false,
+    "flags": [
+     "clock limited to 0 of 2701 MHz",
+     "fastest core fell to 48 of 2701 MHz"
+    ]
+   }
+  },
+  "thenlper/gte-small": {
+   "p50": 62.496100001226296,
+   "p99": 219.73034200036633,
+   "queries": 500,
+   "machine": {
+    "system_busy_percent": 15.2,
+    "cpu_mhz_min": 48,
+    "cpu_mhz_limit_min": 0,
+    "cpu_mhz_max": 2701,
+    "samples": 22,
+    "on_battery": false,
+    "flags": [
+     "clock limited to 0 of 2701 MHz",
+     "fastest core fell to 48 of 2701 MHz"
+    ]
+   }
+  }
+ }
+}

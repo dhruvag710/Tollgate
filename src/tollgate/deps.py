@@ -7,6 +7,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.auth.cache import KeyCache
+from tollgate.cache.semantic import SemanticCache
 from tollgate.config import Settings
 from tollgate.observability.metrics import Metrics
 from tollgate.ratelimit.limiter import RateLimiter
@@ -53,3 +54,9 @@ async def get_budgets(request: Request) -> Budgets:
 async def get_metrics(request: Request) -> Metrics:
     metrics: Metrics = request.app.state.metrics
     return metrics
+
+
+async def get_semantic(request: Request) -> SemanticCache | None:
+    """The semantic cache layer; None when it isn't configured."""
+    semantic: SemanticCache | None = getattr(request.app.state, "semantic", None)
+    return semantic

@@ -1,0 +1,129 @@
+{
+ "model": "BAAI/bge-small-en-v1.5",
+ "dimensions": 384,
+ "load_s": 0.37963049999962095,
+ "memory_bytes": 155033600,
+ "latency_ms": {
+  "p50": 19.65579999887268,
+  "p99": 37.24938699895572,
+  "queries": 500,
+  "torch_threads": 1,
+  "machine": {
+   "system_busy_percent": 18.5,
+   "cpu_mhz_min": 2701,
+   "cpu_mhz_limit_min": 2701,
+   "cpu_mhz_max": 2701,
+   "samples": 22,
+   "on_battery": false,
+   "flags": []
+  }
+ },
+ "chosen_threshold": null,
+ "reported_at": 0.99,
+ "qqp": {
+  "false_hits": 7,
+  "negatives": 2500,
+  "false_hit_rate": 0.0028,
+  "hits": 160,
+  "positives": 2500,
+  "recall": 0.064
+ },
+ "adversarial": {
+  "false_hits": 13,
+  "negatives": 191,
+  "false_hit_rate": 0.06806282722513089,
+  "hits": 0,
+  "positives": 49,
+  "recall": 0.0
+ },
+ "categories": {
+  "number": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "entity": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "action": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "negation": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "unit": {
+   "false_hits": 1,
+   "negatives": 18,
+   "false_hit_rate": 0.05555555555555555,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "year": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "comparison": {
+   "false_hits": 0,
+   "negatives": 20,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "technical": {
+   "false_hits": 0,
+   "negatives": 21,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "reversal": {
+   "false_hits": 12,
+   "negatives": 14,
+   "false_hit_rate": 0.8571428571428571,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "scope": {
+   "false_hits": 0,
+   "negatives": 16,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "paraphrase": {
+   "false_hits": 0,
+   "negatives": 0,
+   "false_hit_rate": null,
+   "hits": 0,
+   "positives": 49,
+   "recall": 0.0
+  }
+ }
+}

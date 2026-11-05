@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     cache_max_temperature: float = Field(default=0.3, ge=0)
     exact_cache_ttl_s: int = Field(default=86_400, ge=1)
     exact_cache_max_entry_bytes: int = Field(default=262_144, ge=1)
+    # The semantic layer (Phase 2.4): on only once both are set, from B4's
+    # evaluation (BENCHMARKS.md): the embedding model, and the similarity a
+    # match needs.
+    semantic_cache_model: str | None = None
+    semantic_cache_threshold: float | None = Field(default=None, gt=0, le=1)
+    semantic_cache_ttl_s: int = Field(default=86_400, ge=1)
+    # PyTorch threads for embedding: one, as a replica runs on one CPU.
+    semantic_cache_threads: int = Field(default=1, ge=1)
+    # How often expired entries are deleted.
+    semantic_cache_sweep_s: float = Field(default=300.0, gt=0)
     # The usage ledger's writer: a batch insert every interval or batch size,
     # whichever comes first, and how long shutdown waits for the last ones.
     ledger_batch_size: int = Field(default=200, ge=1)

@@ -1,0 +1,136 @@
+{
+ "model": "all-MiniLM-L6-v2 + nli-deberta-v3-xsmall",
+ "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+ "cross_encoder": "cross-encoder/nli-deberta-v3-xsmall",
+ "loose_threshold": 0.68,
+ "stage1_qqp": {
+  "false_hits": 979,
+  "negatives": 2500,
+  "false_hit_rate": 0.3916,
+  "hits": 2387,
+  "positives": 2500,
+  "recall": 0.9548
+ },
+ "stage1_adversarial": {
+  "false_hits": 174,
+  "negatives": 191,
+  "false_hit_rate": 0.9109947643979057,
+  "hits": 42,
+  "positives": 49,
+  "recall": 0.8571428571428571
+ },
+ "chosen_threshold": 0.9,
+ "reported_at": 0.9,
+ "qqp": {
+  "false_hits": 41,
+  "negatives": 2500,
+  "false_hit_rate": 0.0164,
+  "hits": 610,
+  "positives": 2500,
+  "recall": 0.244
+ },
+ "adversarial": {
+  "false_hits": 3,
+  "negatives": 191,
+  "false_hit_rate": 0.015706806282722512,
+  "hits": 21,
+  "positives": 49,
+  "recall": 0.42857142857142855
+ },
+ "categories": {
+  "number": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "entity": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "action": {
+   "false_hits": 1,
+   "negatives": 22,
+   "false_hit_rate": 0.045454545454545456,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "negation": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "unit": {
+   "false_hits": 1,
+   "negatives": 18,
+   "false_hit_rate": 0.05555555555555555,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "year": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "comparison": {
+   "false_hits": 0,
+   "negatives": 20,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "technical": {
+   "false_hits": 1,
+   "negatives": 21,
+   "false_hit_rate": 0.047619047619047616,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "reversal": {
+   "false_hits": 0,
+   "negatives": 14,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "scope": {
+   "false_hits": 0,
+   "negatives": 16,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "paraphrase": {
+   "false_hits": 0,
+   "negatives": 0,
+   "false_hit_rate": null,
+   "hits": 21,
+   "positives": 49,
+   "recall": 0.42857142857142855
+  }
+ },
+ "embed_p99_ms": 18.516230998247917,
+ "hit_path_ms": {
+  "p50": 98.50204999929701,
+  "p99": 308.97215300206875
+ },
+ "meets_targets": true
+}

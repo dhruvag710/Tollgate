@@ -4,7 +4,9 @@ migrations/; a test checks that the two agree."""
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -19,7 +21,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -113,3 +115,31 @@ class UsageEventRow(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     ttft_ms: Mapped[int | None] = mapped_column(Integer)  # time to first token
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# The embedding models the semantic cache may use all have this many dimensions.
+EMBEDDING_DIMENSIONS = 384
+
+
+class CacheEntryRow(Base):
+    """A semantic cache entry (SPEC 5.1, Phase 2.4): an answer, found by the
+    embedding of the question it answered, within its tenant and scope."""
+
+    __tablename__ = "cache_entries"
+    __table_args__ = (
+        # Lookups search one tenant's scope exactly; no index on the embedding
+        # (see migrations/versions/0003_cache_entries.py).
+        Index("ix_cache_entries_tenant_id_scope_hash", "tenant_id", "scope_hash"),
+        Index("ix_cache_entries_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    scope_hash: Mapped[str] = mapped_column(Text)
+    query_text: Mapped[str] = mapped_column(Text)  # the last user message
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
+    response_json: Mapped[dict[str, Any]] = mapped_column(JSONB)  # the cached completion
+    completion_tokens: Mapped[int] = mapped_column(Integer)
+    hit_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

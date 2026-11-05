@@ -1,0 +1,136 @@
+{
+ "model": "e5-small-v2 + stsb-distilroberta-base",
+ "embedding_model": "intfloat/e5-small-v2",
+ "cross_encoder": "cross-encoder/stsb-distilroberta-base",
+ "loose_threshold": 0.9,
+ "stage1_qqp": {
+  "false_hits": 1105,
+  "negatives": 2500,
+  "false_hit_rate": 0.442,
+  "hits": 2427,
+  "positives": 2500,
+  "recall": 0.9708
+ },
+ "stage1_adversarial": {
+  "false_hits": 178,
+  "negatives": 191,
+  "false_hit_rate": 0.9319371727748691,
+  "hits": 43,
+  "positives": 49,
+  "recall": 0.8775510204081632
+ },
+ "chosen_threshold": null,
+ "reported_at": 0.99,
+ "qqp": {
+  "false_hits": 7,
+  "negatives": 2500,
+  "false_hit_rate": 0.0028,
+  "hits": 83,
+  "positives": 2500,
+  "recall": 0.0332
+ },
+ "adversarial": {
+  "false_hits": 11,
+  "negatives": 191,
+  "false_hit_rate": 0.05759162303664921,
+  "hits": 0,
+  "positives": 49,
+  "recall": 0.0
+ },
+ "categories": {
+  "number": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "entity": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "action": {
+   "false_hits": 2,
+   "negatives": 22,
+   "false_hit_rate": 0.09090909090909091,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "negation": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "unit": {
+   "false_hits": 2,
+   "negatives": 18,
+   "false_hit_rate": 0.1111111111111111,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "year": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "comparison": {
+   "false_hits": 0,
+   "negatives": 20,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "technical": {
+   "false_hits": 1,
+   "negatives": 21,
+   "false_hit_rate": 0.047619047619047616,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "reversal": {
+   "false_hits": 6,
+   "negatives": 14,
+   "false_hit_rate": 0.42857142857142855,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "scope": {
+   "false_hits": 0,
+   "negatives": 16,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "paraphrase": {
+   "false_hits": 0,
+   "negatives": 0,
+   "false_hit_rate": null,
+   "hits": 0,
+   "positives": 49,
+   "recall": 0.0
+  }
+ },
+ "embed_p99_ms": 70.79157799940728,
+ "hit_path_ms": {
+  "p50": 62.049199998000404,
+  "p99": 203.29218200186003
+ },
+ "meets_targets": false
+}

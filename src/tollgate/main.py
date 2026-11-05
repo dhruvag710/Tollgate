@@ -1,14 +1,18 @@
 """App factory. Run with: uvicorn --factory tollgate.main:create_app"""
 
+import asyncio
 import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
+from typing import Any
 
 import anyio
 import httpx
 from fastapi import FastAPI
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tollgate.api import health
@@ -17,7 +21,10 @@ from tollgate.api.admin import providers as admin_providers
 from tollgate.api.admin import tenants as admin_tenants
 from tollgate.api.v1 import chat, models
 from tollgate.auth.cache import KeyCache
+from tollgate.cache.embedder import Embedder, SentenceTransformerEmbedder
+from tollgate.cache.semantic import SemanticCache
 from tollgate.config import Settings, load_providers_file
+from tollgate.db.models import EMBEDDING_DIMENSIONS
 from tollgate.db.session import create_engine, create_sessionmaker
 from tollgate.errors import UnhandledErrorMiddleware, install_error_handlers
 from tollgate.observability.logging import configure_logging, request_id_var
@@ -83,14 +90,65 @@ class RequestIDMiddleware:
                 )
 
 
+async def _semantic_cache(
+    settings: Settings,
+    sessions: Any,
+    embedder: Embedder | None,
+) -> SemanticCache | None:
+    """The semantic cache layer, if configured: a model (or a test's embedder)
+    and the threshold B4 chose. Its model loads now, so a broken one stops the
+    gateway starting rather than failing requests."""
+    threshold = settings.semantic_cache_threshold
+    if threshold is None or (embedder is None and settings.semantic_cache_model is None):
+        if threshold is not None or settings.semantic_cache_model is not None:
+            log.warning(
+                "the semantic cache is off: it needs both SEMANTIC_CACHE_MODEL and "
+                "SEMANTIC_CACHE_THRESHOLD"
+            )
+        return None
+    if embedder is None:
+        assert settings.semantic_cache_model is not None
+        embedder = await anyio.to_thread.run_sync(
+            partial(
+                SentenceTransformerEmbedder,
+                settings.semantic_cache_model,
+                threads=settings.semantic_cache_threads,
+            )
+        )
+    if embedder.dimensions != EMBEDDING_DIMENSIONS:
+        raise RuntimeError(
+            f"the semantic cache stores {EMBEDDING_DIMENSIONS}-dimension embeddings; "
+            f"the model makes {embedder.dimensions}"
+        )
+    return SemanticCache(
+        sessions, embedder, threshold=threshold, ttl_s=settings.semantic_cache_ttl_s
+    )
+
+
+async def _sweep(semantic: SemanticCache, settings: Settings) -> None:
+    """Delete the semantic cache's expired entries now and then. Lookups skip
+    them anyway: this only keeps the table from growing."""
+    while True:
+        await asyncio.sleep(settings.semantic_cache_sweep_s)
+        try:
+            deleted = await semantic.sweep()
+        except (SQLAlchemyError, OSError, TimeoutError) as exc:
+            log.warning("semantic cache: could not sweep: %s", type(exc).__name__)
+        else:
+            if deleted:
+                log.info("semantic cache: deleted %d expired entries", deleted)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     ledger: Ledger | None = None,
+    embedder: Embedder | None = None,
 ) -> FastAPI:
     """Build the gateway. `upstream_transport` lets tests run providers in-process;
-    `ledger` replaces the Postgres ledger."""
+    `ledger` replaces the Postgres ledger; `embedder` replaces the semantic
+    cache's model (which still needs SEMANTIC_CACHE_THRESHOLD to be on)."""
     settings = settings or Settings()
     configure_logging(settings.log_level)
     if settings.web_concurrency > 1:
@@ -147,9 +205,16 @@ def create_app(
             },
             on_transition=metrics.breaker_transition,
         )
+        semantic: SemanticCache | None = None
+        sweeper: asyncio.Task[None] | None = None
         if writer is not None:
             writer.start(postgres_writer(app.state.sessions))
         try:
+            semantic = app.state.semantic = await _semantic_cache(
+                settings, app.state.sessions, embedder
+            )
+            if semantic is not None:
+                sweeper = asyncio.create_task(_sweep(semantic, settings))
             # Before serving, so a cold gateway can take a burst (best effort).
             await open_connections(
                 redis, min(settings.redis_min_connections, settings.redis_max_connections)
@@ -161,7 +226,11 @@ def create_app(
                 with anyio.move_on_after(USAGE_RECORD_TIMEOUT_S):
                     await metering.wait_idle()
                     await breakers.wait_idle()
+                    if semantic is not None:
+                        await semantic.wait_idle()
         finally:
+            if sweeper is not None:
+                sweeper.cancel()
             # After every request has recorded its event: shutdown flushes them all.
             if writer is not None:
                 await writer.close(settings.ledger_shutdown_timeout_s)

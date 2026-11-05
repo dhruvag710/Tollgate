@@ -14,8 +14,8 @@ number below was produced by `bash bench/run_all.sh` and computed from k6's raw 
 Each benchmark ran 3 times; tables give the **median** of the 3 runs and, in brackets, the
 **range** (lowest to highest run), so one noisy run can't skew a result.
 
-B3 to B6 need v2 features (failover, the semantic cache, the sliding-window limiter) and
-haven't been run.
+**B4** (the semantic cache's accuracy) has run too; it has [its own section](#b4-semantic-cache-evaluation),
+with its own method and environment. B3, B5 and B6 haven't been run.
 
 ## Summary
 
@@ -26,6 +26,10 @@ haven't been run.
 | B1b time-to-first-chunk overhead p99 | < 20 ms, same load as B1 | 10.56 ms (9.98 to 11.19) at 100 RPS | at 100 RPS only |
 | B2 max sustained RPS, 1 replica | report it | 250 (225 to 250) | – |
 | B2 max sustained RPS, 3 replicas | report it | 275 (250 to 325) | – |
+| B4 false hits, an embedding model alone | ≤ 2% on QQP and on the adversarial set | no threshold from 0.80 to 0.99 meets it, for any of the 4 models (single run) | no |
+| B4 false hits, all-MiniLM-L6-v2 then an NLI cross-encoder, at 0.90 | ≤ 2% on both sets | QQP 1.64% (41/2,500), adversarial 1.57% (3/191) | yes |
+| B4 recall at that threshold | report it | QQP 24.4% (610/2,500), hard positives 42.9% (21/49) | – |
+| B4 miss path p99: embedding, then the lookup | < 25 ms | embedding alone 18.5 ms; the lookup is B5's to time | embedding share only |
 
 **Deviation from SPEC:** B1 and B1b ran at 100 RPS, not 500. One gateway replica limited
 to one CPU cannot sustain 500 RPS on this machine (its B2 ceiling is 250 RPS), so at 500
@@ -276,9 +280,190 @@ Throttling is now recorded at every step, so the two cases can be told apart.
 - **B1 at SPEC's 500 RPS** needs either less CPU per request or more gateway processes
   than this machine can give fixed limits to.
 
+## B4: semantic cache evaluation
+
+Whether the semantic cache can tell a question it has answered from one that only looks
+like it ([SPEC.md §9](SPEC.md), B4). Every number here was produced by
+[compare_embedders.py](bench/cache_eval/compare_embedders.py) and
+[two_stage.py](bench/cache_eval/two_stage.py); the raw output is in
+[bench/results/b4-20261105T114809Z/](bench/results/b4-20261105T114809Z/). Every rate comes
+with the counts behind it: in sets this small, one pair can move a rate by half a point.
+
+| | |
+|---|---|
+| Machine | the v1 laptop (Intel Core i7-1165G7, 4 cores, 8 threads), on mains power, Windows power mode Best performance (plan: Balanced), other apps closed; no Docker: B4 runs in the host's Python |
+| Software | Python 3.13.14, torch 2.15.0+cpu, sentence-transformers 6.2.0; every model in float32 |
+| Timing | single queries on one PyTorch thread (as the gateway runs it), 500 after 20 to warm up; each timed run watched for throttling and other load (see [timing conditions](#timing-conditions)) |
+| Run | 2026-11-05, 11:48 to 12:26 UTC; one run of each part, timing repeated once where flagged |
+
+**The pairs.**
+- **QQP:** 5,000 pairs from GLUE's dev split, 2,500 duplicates and 2,500 not, sampled with
+  seed 20261104. The ids and the archive's checksum are in
+  [qqp_sample.json](bench/cache_eval/qqp_sample.json); Quora's text isn't committed.
+- **Adversarial** ([adversarial_pairs.jsonl](bench/cache_eval/adversarial_pairs.jsonl)): 191
+  hand-written near-misses, which must not hit, in 10 categories (number 22, entity 22,
+  action 22, technical 21, comparison 20, negation 18, unit 18, year 18, scope 16,
+  reversal 14), and 49 hard positives, the same question reworded, which should.
+
+The set was reviewed before the run. Four pairs were dropped: near-misses #71 (coffee bad or
+good: arguably one question), #83 (unnatural wording) and #166 (one answer serves both
+directions), and hard positive #213 (the Berlin Wall fell in 1989 but was torn down from
+1990 to 1992). Ten near-misses that changed two things were replaced in their slots by
+pairs that change one:
+
+| # | Category | Now | Was |
+|---|---|---|---|
+| 42 | entity | speed of sound in air / in water | speed of light in a vacuum / of sound in air |
+| 81 | negation | What should I feed my dog? / What shouldn't I… | my dog eats chocolate / my dog won't eat |
+| 84 | negation | Which countries require a visa for US citizens? / …don't require… | safe to fly while pregnant / unsafe to fly after surgery |
+| 80 | negation | Which houseplants need direct sunlight? / …don't need… | don't pay my credit card bill / pay it early |
+| 97 | unit | a gallon of water in pounds / in kilograms | a liter in kilograms / a gallon in pounds |
+| 136 | comparison | the hardest mineral / the softest mineral | the hardest natural substance / the softest natural mineral |
+| 139 | comparison | the earliest age to claim US Social Security / the latest age | the earliest age to claim / the latest age to delay claiming |
+| 142 | comparison | the brightest star in the night sky / the second brightest | the brightest star in the night sky / the closest star to Earth |
+| 151 | technical | list all running processes in Linux / in Windows | list all processes in Linux / kill a user's processes |
+| 194 | scope | delete one of my Facebook posts / all of my posts | delete my account permanently / deactivate it temporarily |
+
+**The rule** (SPEC §9): the lowest threshold at which false hits are at most 2% on both
+sets, that is at most 50 of the 2,500 QQP non-duplicates and 3 of the 191 near-misses.
+
+### Embedding models alone: no threshold meets the target
+
+For none of the four models does any threshold from 0.80 to 0.99 meet the rule. At 0.99,
+the sweep's highest:
+
+| Model | QQP false hits | Near-miss false hits | QQP recall | Hard-positive recall | Embed p50 / p99 (ms) | Memory (MB) |
+|---|---|---|---|---|---|---|
+| BAAI/bge-small-en-v1.5 | 0.28% (7/2,500) | 6.81% (13/191) | 6.4% (160/2,500) | 0.0% (0/49) | 19.7 / 37.2 | 148 |
+| sentence-transformers/all-MiniLM-L6-v2 | 0.12% (3/2,500) | 6.81% (13/191) | 4.5% (112/2,500) | 0.0% (0/49) | 10.1 / 18.5 | 109 |
+| intfloat/e5-small-v2 | 0.64% (16/2,500) | 7.33% (14/191) | 12.0% (300/2,500) | 0.0% (0/49) | 20.7 / 70.8 (flagged) | 147 |
+| thenlper/gte-small | 0.52% (13/2,500) | 6.81% (13/191) | 12.4% (309/2,500) | 0.0% (0/49) | 19.2 / 33.5 | 147 |
+
+**Why: word order.** These models average their words' vectors, so questions with the same
+words in a different order embed almost identically.
+- At 0.99, 85.71% of reversals (12/14) still hit for every model, at similarities from
+  0.990 to 0.999: "How do I convert JSON to YAML?" against "…YAML to JSON?", "Is Python
+  faster than Java?" against "Is Java faster than Python?".
+- The unit category adds #88, 30 °C in °F against 30 °F in °C: 5.56% (1/18), and 11.11%
+  (2/18) for e5-small.
+- Every other category is at 0 by 0.99, where little is left to hit: at most 12.4% of QQP
+  duplicates (309/2,500), and no hard positive.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench/results/b4-20261105T114809Z/sentence-transformers__all-MiniLM-L6-v2/chart-dark.png">
+  <img alt="all-MiniLM-L6-v2: false-hit rate and recall against the similarity threshold, for QQP and the adversarial set. The adversarial false-hit rate stays above the 2% line all the way to 0.99." src="bench/results/b4-20261105T114809Z/sentence-transformers__all-MiniLM-L6-v2/chart-light.png">
+</picture>
+
+Each model's sweep, with false hits by category at every threshold, is in its directory's
+`sweep.md`; [compare.md](bench/results/b4-20261105T114809Z/compare.md) has them side by
+side.
+
+### Two stages: an embedding model, then a cross-encoder
+
+A cross-encoder reads both questions together, so word order and negation count. In the
+second stage:
+- **Stage 1:** the embedding model passes the nearest entry at a loose threshold, the
+  highest that keeps at least 95% of QQP duplicates.
+- **Stage 2:** a cross-encoder decides, at a threshold chosen by the same 2% rule.
+
+Two cross-encoders, both trained on data without QQP, per their model cards:
+- `cross-encoder/nli-deberta-v3-xsmall`, trained on SNLI and MultiNLI. It is a match only if
+  each question entails the other; the score is the lesser entailment probability.
+- `cross-encoder/stsb-distilroberta-base`, trained on the STS benchmark. Its similarity
+  score, with the cached question first.
+
+Their base models' pretraining corpora aren't listed in full, so exposure to Quora's text
+in pretraining can't be ruled out.
+
+| Embedding model | Loose threshold | Stage-1 hard-positive recall | NLI threshold | QQP false hits | Near-miss false hits | QQP recall | Hard-positive recall |
+|---|---|---|---|---|---|---|---|
+| bge-small-en-v1.5 | 0.79 | 89.8% (44/49) | 0.95 | 1.20% (30/2,500) | 1.05% (2/191) | 18.6% (464/2,500) | 20.4% (10/49) |
+| **all-MiniLM-L6-v2** | 0.68 | 85.7% (42/49) | 0.90 | 1.64% (41/2,500) | 1.57% (3/191) | 24.4% (610/2,500) | 42.9% (21/49) |
+| e5-small-v2 | 0.90 | 87.8% (43/49) | 0.95 | 1.24% (31/2,500) | 1.05% (2/191) | 18.6% (464/2,500) | 20.4% (10/49) |
+| gte-small | 0.89 | 89.8% (44/49) | 0.90 | 1.68% (42/2,500) | 1.57% (3/191) | 24.3% (607/2,500) | 42.9% (21/49) |
+
+- **The NLI check meets the target behind every embedding model.** It stops all 14
+  reversals. Best by the rule (the highest QQP recall, among pairings whose embedding fits
+  the miss path's budget): **all-MiniLM-L6-v2, then the NLI check at 0.90**. Its three
+  near-miss hits:
+  - #157, git commit against git push: 0.979
+  - #52, zip against unzip: 0.965
+  - #91, gallon against quart: 0.917
+- **The STS cross-encoder never meets it.** At 0.99, 42.86% of reversals (6/14) still hit,
+  and 5.76% of all near-misses (11/191). Its training data scores similarity, not whether
+  the answers match.
+- **Stage 1 loses little.** At MiniLM's loose threshold of 0.68 it keeps 95.5% of QQP
+  duplicates (2,387/2,500) and 85.7% of hard positives (42/49).
+- **Stage 2 limits recall.** Even at the NLI check's loosest threshold, 0.05, the two
+  stages catch 48.6% of QQP duplicates (1,215/2,500), while letting through 8.36% of
+  non-duplicates (209/2,500). Many QQP "duplicates" don't entail each other: one asks more
+  than the other.
+
+Per-category tables for every pairing are in
+[two-stage/compare.md](bench/results/b4-20261105T114809Z/two-stage/compare.md), and each
+pairing's sweep is in its own directory.
+
+### Latency
+
+| Path (one thread) | p50 (ms) | p99 (ms) | Target |
+|---|---|---|---|
+| Miss path, embedding share (all-MiniLM-L6-v2) | 10.1 | 18.5 | with the lookup, < 25 at p99 |
+| NLI check alone (both directions, one call) | 88.7 | 284.3 (flagged) | none |
+| Hit path: embed, then the NLI check | 98.5 | 309.0 (flagged) | none: a hit replaces a provider call of seconds |
+| STS check alone, for comparison | 41.3 | 88.0 | none |
+
+The NLI cross-encoder adds 402 MB of resident memory, and MiniLM 109 MB. Scoring all 5,240
+pairs on every core took 211 s for the NLI model and 129 s for the STS model.
+
+**A rejected candidate pays for the check too.** A request whose nearest entry passes stage 1
+but fails the NLI check is a miss that paid about 89 ms (median) first. In these sets, stage 1
+passes 39.16% of QQP non-duplicates (979/2,500) and 91.10% of near-misses (174/191), but
+both sets are built of look-alikes. How often real traffic pays this is B5's to measure.
+
+#### Timing conditions
+
+Each timed run was watched: how busy the whole machine was, every core's clock, and its
+clock limit (via Windows' power API). One working thread is about 12.5% of this machine's
+8 logical cores.
+- **The embedding models:** the first comparison flagged all four for low clocks. That
+  turned out to be a reading error: `psutil` reports processor 0 alone, which idles at
+  1,200 MHz while the timed thread runs on another core. With every core read, all four
+  were measured once more. bge, MiniLM and gte were clean (14.3 to 18.5% busy, the fastest
+  core at 2,701 MHz throughout).
+- **e5-small** was flagged again, by a reading no CPU can produce: a clock limit of 0 and a
+  fastest core at 48 MHz. Its p99 of 70.8 ms is twice gte's, a model of the same size, so
+  read it as disturbed.
+- **The cross-encoders:** the same impossible reading came up in 9 of the 10 timed runs, in
+  both timing runs (the first is kept in
+  [two-stage/first-timing-run/](bench/results/b4-20261105T114809Z/two-stage/first-timing-run/)).
+  The machine was 14.6 to 20.7% busy throughout, about one thread's worth.
+  - **Medians agree across the two runs:** the NLI check 89.6, then 88.7 ms; MiniLM's hit
+    path 100.6, then 98.5 ms.
+  - **The tails don't.** The one run read cleanly, the STS check alone, has a p99 of
+    88.0 ms; flagged, the same check had 172.6 ms. So the flagged p99s above are probably
+    inflated by something intermittent, likely Windows power management.
+  - The cause wasn't found. A plain compute loop on one thread didn't reproduce it in 589
+    readings.
+
+### What B4 found
+
+- **An embedding model alone can't be the semantic cache's judge.** No threshold keeps
+  false hits at or below 2%, because questions with the same words in a different order
+  look identical to it.
+- **An NLI check after it meets the target**, with all-MiniLM-L6-v2 as the first stage: 1.64%
+  (41/2,500) and 1.57% (3/191) false hits. It catches 24.4% of QQP duplicates (610/2,500) and
+  42.9% of hard positives (21/49).
+- **It isn't in the gateway yet**, and the semantic layer stays off. Open before it can be:
+  - the miss path's Postgres lookup, which has about 6.5 ms left of the 25 ms budget at p99
+    (B5)
+  - how often real traffic pays for a rejected check (B5)
+  - whether one check per candidate, about 0.1 s at the median, is acceptable on the hit path
+
 ## Reproducing
 
 ```sh
+python bench/cache_eval/compare_embedders.py           # B4, the embedding models: ~6 minutes
+python bench/cache_eval/two_stage.py bench/results/b4-<stamp>   # the second stage: ~15 minutes
 PYTHON=.venv/bin/python bash bench/run_all.sh   # ~80 minutes; results in bench/results/<UTC timestamp>/
 python bench/report.py bench/results/<timestamp>  # the result tables, from the raw output
 python bench/compare.py bench/results/<before> bench/results/<after>  # a before/after table

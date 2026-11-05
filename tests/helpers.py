@@ -1,7 +1,9 @@
 """Test helpers shared across suites."""
 
+import hashlib
 import math
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -209,6 +211,31 @@ def write_providers(
     path = tmp_path / "providers.yaml"
     path.write_text(yaml.safe_dump(data))
     return path
+
+
+class WordEmbedder:
+    """A deterministic stand-in for the semantic cache's model: a bag of words,
+    each word hashed to one of 384 dimensions, scaled to unit length. Questions
+    sharing most of their words come out close: one word added to six scores
+    0.93, one word of six changed ("Austria", "Australia") 0.83. `texts`
+    records what it was asked to embed; set `fail` to make it raise."""
+
+    dimensions = 384
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.fail = False
+
+    def embed(self, text: str) -> list[float]:
+        self.texts.append(text)
+        if self.fail:
+            raise RuntimeError("the embedder is down")
+        vector = [0.0] * self.dimensions
+        for word in re.findall(r"[a-z0-9]+", text.lower()):
+            digest = hashlib.sha256(word.encode()).digest()
+            vector[int.from_bytes(digest[:4], "big") % self.dimensions] += 1.0
+        norm = math.sqrt(sum(x * x for x in vector)) or 1.0
+        return [x / norm for x in vector]
 
 
 class NoBreakers:

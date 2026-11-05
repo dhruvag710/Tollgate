@@ -1,0 +1,132 @@
+{
+ "model": "intfloat/e5-small-v2",
+ "dimensions": 384,
+ "load_s": 0.3748369000022649,
+ "memory_bytes": 154607616,
+ "latency_ms": {
+  "p50": 20.72529999895778,
+  "p99": 70.79157799940728,
+  "queries": 500,
+  "torch_threads": 1,
+  "machine": {
+   "system_busy_percent": 15.3,
+   "cpu_mhz_min": 48,
+   "cpu_mhz_limit_min": 0,
+   "cpu_mhz_max": 2701,
+   "samples": 22,
+   "on_battery": false,
+   "flags": [
+    "clock limited to 0 of 2701 MHz",
+    "fastest core fell to 48 of 2701 MHz"
+   ]
+  }
+ },
+ "chosen_threshold": null,
+ "reported_at": 0.99,
+ "qqp": {
+  "false_hits": 16,
+  "negatives": 2500,
+  "false_hit_rate": 0.0064,
+  "hits": 300,
+  "positives": 2500,
+  "recall": 0.12
+ },
+ "adversarial": {
+  "false_hits": 14,
+  "negatives": 191,
+  "false_hit_rate": 0.07329842931937172,
+  "hits": 0,
+  "positives": 49,
+  "recall": 0.0
+ },
+ "categories": {
+  "number": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "entity": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "action": {
+   "false_hits": 0,
+   "negatives": 22,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "negation": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "unit": {
+   "false_hits": 2,
+   "negatives": 18,
+   "false_hit_rate": 0.1111111111111111,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "year": {
+   "false_hits": 0,
+   "negatives": 18,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "comparison": {
+   "false_hits": 0,
+   "negatives": 20,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "technical": {
+   "false_hits": 0,
+   "negatives": 21,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "reversal": {
+   "false_hits": 12,
+   "negatives": 14,
+   "false_hit_rate": 0.8571428571428571,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "scope": {
+   "false_hits": 0,
+   "negatives": 16,
+   "false_hit_rate": 0.0,
+   "hits": 0,
+   "positives": 0,
+   "recall": null
+  },
+  "paraphrase": {
+   "false_hits": 0,
+   "negatives": 0,
+   "false_hit_rate": null,
+   "hits": 0,
+   "positives": 49,
+   "recall": 0.0
+  }
+ }
+}

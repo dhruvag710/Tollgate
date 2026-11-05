@@ -136,7 +136,8 @@ tollgate/
 │   │   ├── build_pairs.py
 │   │   ├── adversarial_pairs.jsonl
 │   │   ├── eval_threshold.py
-│   │   └── compare_embedders.py
+│   │   ├── compare_embedders.py
+│   │   └── two_stage.py           # embedding model, then a cross-encoder
 │   ├── workloads/make_workload.py
 │   ├── run_all.sh
 │   └── results/                   # raw JSON outputs, committed
@@ -252,7 +253,7 @@ CREATE TABLE cache_entries (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at      TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX ON cache_entries USING hnsw (embedding vector_cosine_ops);
+-- No index on the embedding: a lookup searches one tenant's scope exactly (Phase 2.4)
 CREATE INDEX ON cache_entries (tenant_id, scope_hash);
 ```
 
@@ -420,12 +421,16 @@ Prices are config values. Verify them against provider pricing pages before repo
 
 **Phase 2.4: Semantic cache**
 - **Cacheability policy** (`policy.py`, built in Phase 2.3 and governing both layers): only when `temperature <= 0.3` (configurable; a request without one runs at the provider's default, 1, so is never cached), `n` is 1, no tools/function calls (none offered, none in the conversation), tenant has cache enabled, and the client didn't send `X-Tollgate-Cache: bypass`
-- **Scope:** `scope_hash` = hash(model, system prompt, all messages except the last user message, params). Only the **last user message** is embedded. Entries only match within the same scope and tenant. This prevents "same question, different conversation" false hits.
-- Lookup: top-1 by cosine similarity within scope; hit if `similarity >= threshold`
-- Threshold is chosen from the cache evaluation (section 9, B4), not by vibes
+- **Scope:** `scope_hash` = hash(model, system prompt, all messages except the last user message, params). Only the **last user message** is embedded. Entries only match within the same scope and tenant. This prevents "same question, different conversation" false hits. Concretely, the scope is the exact-match key (Phase 2.3) of the request with its last message taken out; a request whose last message isn't a user message with text is looked up in the exact layer only.
+- Lookup: top-1 by cosine similarity within scope; hit if `similarity >= threshold`. It runs only after an exact-layer miss, in Postgres (`cache_entries`, pgvector), as an exact search of the tenant's unexpired entries in that scope (found through the `(tenant_id, scope_hash)` index), so no other tenant's entries can hide or change the answer. There is no approximate index: with 3,000 of another tenant's vectors identical to the query (the same question cached by many tenants), an HNSW index filtered by tenant missed the tenant's nearest entry in most builds tested, iterative scan or not. If B5's lookup p99 misses its target, HNSW is the fallback, with that blind spot documented.
+- Threshold is chosen from the cache evaluation (section 9, B4), not by vibes. The semantic layer stays off until B4 has chosen a model and a threshold (`SEMANTIC_CACHE_MODEL`, `SEMANTIC_CACHE_THRESHOLD`).
+- B4's result (BENCHMARKS.md): no embedding model alone meets the false-hit target at any threshold, because questions with the same words in a different order embed almost identically. With an NLI cross-encoder (`cross-encoder/nli-deberta-v3-xsmall`) checking the candidate after `all-MiniLM-L6-v2` finds it, the target is met. That check isn't wired into the gateway yet, so the semantic layer stays off; the miss path's lookup and the cost of a rejected check are B5's to measure first.
+- The embedder is `sentence-transformers`, an optional install extra (`.[semantic]`), run in the gateway process off the event loop. Tests use a deterministic stand-in; only benchmarks load real models.
+- The semantic layer fails open: if the embedder or Postgres fails, the lookup is a miss, logged; a request never fails because of the cache
 - Stream replay: cached response re-emitted as SSE chunks so streaming clients work unchanged
-- TTL per entry (default 24h); usage event records `saved_cost_usd`
-- ✅ Accept: cache lookup p99 meets target; false-hit rate at chosen threshold meets target on the eval set
+- TTL per entry (default 24h); usage event records `saved_cost_usd`. A hit is free beyond RPM, as an exact-layer hit is (Phase 2.3). A miss stores its complete answer afterwards, off the response path.
+- Latency budget, split by outcome: the **miss path** (embed the question, then the Postgres lookup) must stay under 25 ms at p99, since every miss pays it before its provider call. The **hit path** (the miss path, plus any check a candidate must pass) is reported separately, with no target: a hit replaces a provider call that takes seconds.
+- ✅ Accept: miss-path p99 meets target; false-hit rate at chosen threshold meets target on the eval set
 
 **Phase 2.5: Sliding window limiter (comparison)**
 - Implement `sliding_window.lua` (sorted-set log), selectable per tenant
@@ -496,19 +501,22 @@ Lint (ruff), type check (mypy), unit + integration + concurrency tests, coverage
 | **B2** | Throughput ceiling | Ramp RPS until p99 overhead > 50 ms or errors > 0.1% | Report max sustained RPS (1 and 3 replicas) |
 | **B3** | Failover | Kill primary during a 300 RPS run | Error rate during failover < 1%; time to steady state reported |
 | **B4** | Semantic cache accuracy | See below | False-hit rate ≤ 2% at chosen threshold; report recall at that threshold |
-| **B5** | Cache impact | Replay a realistic workload with cache on vs. off | Report hit rate, $ saved, p50 latency on hits; cache lookup p99 < 25 ms |
+| **B5** | Cache impact | Replay a realistic workload with cache on vs. off | Report hit rate, $ saved, p50 latency on hits; miss path (embed + lookup) p99 < 25 ms; hit path reported separately |
 | **B6** | Limiter comparison | Token bucket vs. sliding window | Table of memory/tenant, p99 latency, boundary burst |
 
 ### B4: Semantic cache evaluation (the most important benchmark)
 
 **Datasets**
 1. **Quora Question Pairs (QQP):** labeled duplicate / non-duplicate question pairs. Sample 5,000 balanced pairs.
-2. **Adversarial near-misses** (`adversarial_pairs.jsonl`, ~200 hand-written): pairs that are lexically similar but need different answers. Examples: "What's 2+2?" vs. "What's 2+3?", "capital of Austria" vs. "capital of Australia", "how to start a Docker container" vs. "how to stop a Docker container", negations, different numbers, different units, different years.
+2. **Adversarial near-misses** (`adversarial_pairs.jsonl`, ~200 hand-written): pairs that are lexically similar but need different answers. Examples: "What's 2+2?" vs. "What's 2+3?", "capital of Austria" vs. "capital of Australia", "how to start a Docker container" vs. "how to stop a Docker container", negations, different numbers, different units, different years. Plus ~50 **hard positives**: the same question worded with little overlap, which should hit, so the adversarial set reports recall too.
+
+QQP's text is not committed: `build_pairs.py` downloads it from GLUE's distribution, checks its checksum, and samples with a fixed seed; only the sampled pair IDs are committed.
 
 **Procedure** (`eval_threshold.py`)
 - Embed both sides of each pair, compute cosine similarity
 - Sweep thresholds 0.80 → 0.99 in 0.01 steps
 - At each threshold: false-hit rate (non-duplicates that would hit) and recall (duplicates that would hit), reported separately for QQP and adversarial sets
+- Both also by category: each category of the adversarial set (and QQP as one), at the chosen threshold and across the sweep, with the near-misses that hit at the chosen threshold listed. Every rate is reported with the counts behind it ("1.57% (3/191)"): one adversarial pair moves its rate by half a point.
 - Choose the lowest threshold where false-hit rate ≤ 2% on **both** sets
 - Plot the curves; commit the chart
 
@@ -522,6 +530,11 @@ Lint (ruff), type check (mypy), unit + integration + concurrency tests, coverage
 | thenlper/gte-small | 384 |
 
 Compare on recall at 2% false-hit rate, CPU embed latency (p50/p99 per query), and memory. The winner becomes the default. This is the "I picked the embedding model from my own benchmarks" story, so keep the table.
+
+**Second stage** (`two_stage.py`, added after the first B4 run found no embedding model meets the target alone: questions with the same words in a different order embed almost identically)
+- Stage 1: the embedding model passes a candidate at a loose threshold, the highest that keeps 95% of QQP duplicates; report hard-positive recall there, to show what stage 1 loses
+- Stage 2: a cross-encoder reads both questions together and decides; its threshold is chosen by the same 2% rule. Two cross-encoders, neither trained on QQP (per their model cards): an NLI model, matching only if each question entails the other, and an STS-trained one
+- Report each pairing's rates as above, the cross-encoders' latency and memory, and the hit path (embed, then verify) on one thread
 
 ### B5: Realistic workload
 

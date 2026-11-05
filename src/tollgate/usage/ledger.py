@@ -442,6 +442,8 @@ class UsageMeter:
         # it, set once the response is complete.
         self.cache_key: str | None = None
         self.cache_completion: dict[str, Any] | None = None
+        # Stores the answer in the semantic layer too, when it was consulted.
+        self.semantic_store: Callable[[dict[str, Any]], None] | None = None
         self.attempts = 0
         self._unanswered = 0  # earlier attempts sent, then never answered
         self._measured = False
@@ -523,6 +525,8 @@ class UsageMeter:
                 self._metering.cache_ttl_s,
                 self._metering.cache_max_entry_bytes,
             )
+            if store is not None and self.semantic_store is not None:
+                self.semantic_store(self.cache_completion)  # in the background
         await self._metering.ledger.record(
             UsageEvent(
                 request_id=self.request_id,

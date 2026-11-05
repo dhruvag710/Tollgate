@@ -5,20 +5,34 @@ same Redis call that admits it."""
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
 import openai
 import pytest
+import redis
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
 from mock_provider.app import Stats
 from mock_provider.app import create_app as create_mock_app
-from tests.helpers import ADMIN, TEST_PROVIDERS, MemoryLedger, issue_key, redis_month
+from tests.helpers import (
+    ADMIN,
+    HTTP_TIMEOUT,
+    TEST_PROVIDERS,
+    MemoryLedger,
+    issue_key,
+    redis_month,
+    run_server,
+    serve,
+    wait_until,
+    write_providers,
+)
 from tests.integration.test_rate_limit import RoundTrips, remaining
 from tollgate.config import Settings
 from tollgate.main import create_app
@@ -50,13 +64,20 @@ class Gateway:
 
 
 @asynccontextmanager
-async def gateway(settings: dict[str, Any] | None = None, **tenant: Any) -> AsyncIterator[Gateway]:
+async def gateway(
+    settings: dict[str, Any] | None = None,
+    *,
+    upstream: httpx.AsyncBaseTransport | None = None,
+    **tenant: Any,
+) -> AsyncIterator[Gateway]:
+    """A gateway for a tenant of its own; its providers are the in-process mock,
+    or `upstream`."""
     tenant = {"rpm_limit": 1000, "tpm_limit": 1_000_000, **tenant}
     issued = await issue_key(**tenant)
     ledger, mock = MemoryLedger(), create_mock_app(env={"MOCK_SEED": "7"})
     app = create_app(
         Settings(providers_config=TEST_PROVIDERS, **(settings or {})),
-        upstream_transport=httpx.ASGITransport(app=mock),
+        upstream_transport=upstream or httpx.ASGITransport(app=mock),
         ledger=ledger,
     )
     async with (
@@ -272,6 +293,144 @@ async def test_failures_are_never_stored(gw: Gateway, stream: bool, mode: str) -
     await gw.chat({**CHAT, "stream": stream}, **fail)
     r = await gw.chat()
     assert (r.status_code, r.headers["x-tollgate-cache"]) == (200, "MISS")
+
+
+def sse(chunk: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps(chunk).encode() + b"\n\n"
+
+
+class Scripted(httpx.AsyncByteStream):
+    """A response body that sends `parts`, raising any exception among them."""
+
+    def __init__(self, *parts: bytes | Exception) -> None:
+        self.parts = parts
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for part in self.parts:
+            if isinstance(part, Exception):
+                raise part
+            yield part
+
+
+@pytest.mark.parametrize("ending", ["done", "dropped-before-done"])
+async def test_a_stream_is_stored_only_once_it_reached_done(ending: str) -> None:
+    """The boundary: every part of a complete answer (its content, finish and
+    usage), and then the provider drops the connection instead of sending
+    [DONE]. The client never got a complete stream, so nothing is kept."""
+    head = {"id": "c", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o-mini"}
+
+    def chunk(delta: dict[str, Any], finish: str | None = None) -> bytes:
+        return sse({**head, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+
+    usage = {"prompt_tokens": 15, "completion_tokens": 1, "total_tokens": 16}
+    answer = [
+        chunk({"role": "assistant", "content": ""}),
+        chunk({"content": "Vienna."}),
+        chunk({}, "stop"),
+        sse({**head, "choices": [], "usage": usage}),
+    ]
+    end = b"data: [DONE]\n\n" if ending == "done" else httpx.RemoteProtocolError("dropped")
+    script = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=Scripted(*answer, end)
+        )
+    )
+    async with gateway(upstream=script) as g:
+        r = await g.chat({**CHAT, "stream": True})
+        assert r.status_code == 200 and r.headers["x-tollgate-cache"] == "MISS"
+        entries = exact_entries(g.key.key.tenant_id)
+    if ending == "done":
+        assert (g.last().status, len(entries)) == ("success", 1)
+    else:
+        assert "data: [DONE]" not in r.text
+        assert (g.last().status, entries) == ("provider_error", [])
+
+
+def exact_entries(tenant_id: Any) -> list[str]:
+    """The tenant's exact-cache keys, straight from Redis."""
+    client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    try:
+        return list(client.scan_iter(f"tg:exact:{tenant_id}:*"))
+    finally:
+        client.close()
+
+
+SLOW = {"X-Mock-Tokens-Per-Sec": "20", "X-Mock-Output-Tokens": "1000"}  # 50 s if left to run
+
+
+def read_tokens(lines: Iterator[str], n: int) -> list[str]:
+    """The next `n` token events from a stream's lines."""
+    tokens = []
+    for line in lines:
+        if line.startswith("data: ") and '"content":"' in line and '"content":""' not in line:
+            tokens.append(line)
+            if len(tokens) == n:
+                break
+    return tokens
+
+
+def test_a_stream_the_client_left_is_never_stored(tmp_path: Path) -> None:
+    issued = asyncio.run(issue_key())  # a tenant of its own, with nothing cached
+    tenant_id, auth = issued.key.tenant_id, {"Authorization": f"Bearer {issued.raw_key}"}
+    body = {**CHAT, "stream": True}
+    ledger = MemoryLedger()
+    with run_server(create_mock_app(env={})) as mock_url:
+        config = write_providers(tmp_path, f"{mock_url}/v1", single_route=True)
+        app = create_app(Settings(providers_config=config), ledger=ledger)
+        with serve(app) as (url, _):
+            with httpx.stream(
+                "POST", f"{url}/v1/chat/completions", json=body,
+                headers={**auth, **SLOW}, timeout=HTTP_TIMEOUT,
+            ) as r:  # fmt: skip
+                assert r.headers["x-tollgate-cache"] == "MISS"  # it was cacheable
+                assert len(read_tokens(r.iter_lines(), 3)) == 3
+            # Leaving the block hung up, mid-stream.
+            assert wait_until(lambda: len(ledger.events) == 1)
+            assert ledger.events[0].status == "client_disconnect"
+            # Its settle call, which is where an answer is stored, has run.
+            time.sleep(1)
+            assert exact_entries(tenant_id) == []
+            # The same request, left to finish: a miss, stored this time.
+            done = httpx.post(
+                f"{url}/v1/chat/completions", json=body, headers=auth, timeout=HTTP_TIMEOUT
+            )
+            assert done.headers["x-tollgate-cache"] == "MISS"
+            assert done.text.rstrip().endswith("data: [DONE]")
+            assert wait_until(lambda: len(exact_entries(tenant_id)) == 1)
+
+
+def test_a_stream_cut_off_by_shutdown_is_never_stored(tmp_path: Path) -> None:
+    issued = asyncio.run(issue_key())  # a tenant of its own, with nothing cached
+    tenant_id, auth = issued.key.tenant_id, {"Authorization": f"Bearer {issued.raw_key}"}
+    body = {**CHAT, "stream": True}
+    ledger = MemoryLedger()
+    with run_server(create_mock_app(env={})) as mock_url:
+        config = write_providers(tmp_path, f"{mock_url}/v1", single_route=True)
+        app = create_app(Settings(providers_config=config), ledger=ledger)
+        with (
+            serve(app, timeout_graceful_shutdown=0.5) as (url, server),
+            httpx.stream(
+                "POST", f"{url}/v1/chat/completions", json=body,
+                headers={**auth, **SLOW}, timeout=HTTP_TIMEOUT,
+            ) as r,
+        ):  # fmt: skip
+            lines = r.iter_lines()
+            assert len(read_tokens(lines, 3)) == 3
+            server.should_exit = True  # as on SIGTERM; the client stays connected
+            rest = [line for line in lines if line.startswith("data: ")]
+        # Shut down: the stream ended with an error event, and shutdown waited
+        # for every settle call, so anything it would store is stored by now.
+        assert "data: [DONE]" not in rest
+        assert ledger.events[-1].status == "gateway_shutdown"
+        assert exact_entries(tenant_id) == []
+        # The same request on a fresh gateway, left to finish, is stored.
+        again = create_app(Settings(providers_config=config), ledger=MemoryLedger())
+        with serve(again) as (url, _):
+            done = httpx.post(
+                f"{url}/v1/chat/completions", json=body, headers=auth, timeout=HTTP_TIMEOUT
+            )
+        assert done.headers["x-tollgate-cache"] == "MISS"
+        assert len(exact_entries(tenant_id)) == 1
 
 
 # --- what a hit costs --------------------------------------------------------------------

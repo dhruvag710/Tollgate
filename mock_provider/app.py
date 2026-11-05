@@ -251,6 +251,11 @@ def create_app(env: Mapping[str, str] = os.environ) -> FastAPI:
     fail_seed = env.get("MOCK_FAIL_SEED")
     fail_rng = random.Random(int(fail_seed) if fail_seed else None)
     models = [m.strip() for m in env.get("MOCK_MODELS", DEFAULT_MODELS).split(",") if m.strip()]
+    # Load the tokenizers now, not on the first request: loading one takes a
+    # few hundred ms, which the first requests of a burst would all wait out
+    # (C4's provider times out at 0.5 s). tiktoken keeps them per process.
+    for model in models:
+        _encoding(model)
 
     app = FastAPI(title="Tollgate mock provider", docs_url=None, redoc_url=None)
     app.state.stats = Stats()

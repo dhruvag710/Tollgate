@@ -65,7 +65,13 @@ def test_migrations_round_trip_and_match_the_models() -> None:
 
         command.upgrade(config, "head")
         tables, diff = asyncio.run(_inspect(url_text))
-        assert set(tables) == {"alembic_version", "tenants", "api_keys", "usage_events"}
+        assert set(tables) == {
+            "alembic_version",
+            "tenants",
+            "api_keys",
+            "usage_events",
+            "cache_entries",
+        }
         assert diff == []  # the migrated schema is exactly the models'
     finally:
         asyncio.run(_admin(f"DROP DATABASE {SCRATCH_DB} WITH (FORCE)"))

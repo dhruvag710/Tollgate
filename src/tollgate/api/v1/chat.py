@@ -1,6 +1,6 @@
 """POST /v1/chat/completions: streaming and non-streaming passthrough, with
 failover across the model's providers (SPEC Phase 2.1) and answers from the
-exact-match cache (Phase 2.3)."""
+exact-match cache (Phase 2.3) and the semantic cache (Phase 2.4)."""
 
 import json
 from functools import partial
@@ -17,6 +17,7 @@ from tollgate.auth.context import TenantContext
 from tollgate.auth.dependency import authenticate, presented_key
 from tollgate.cache import exact, policy
 from tollgate.cache.replay import fresh
+from tollgate.cache.semantic import SemanticCache, question_of
 from tollgate.config import Settings
 from tollgate.deps import (
     get_budgets,
@@ -25,6 +26,7 @@ from tollgate.deps import (
     get_metering,
     get_metrics,
     get_router,
+    get_semantic,
     get_sessions,
     get_settings,
 )
@@ -108,6 +110,7 @@ async def chat_completions(
     limiter: Annotated[RateLimiter, Depends(get_limiter)],
     budgets: Annotated[Budgets, Depends(get_budgets)],
     metrics: Annotated[Metrics, Depends(get_metrics)],
+    semantic: Annotated[SemanticCache | None, Depends(get_semantic)],
 ) -> Response:
     # Before the body is read: a missing or malformed key costs nothing.
     raw_key = presented_key(request)
@@ -188,6 +191,20 @@ async def chat_completions(
 
     consulted = bool(cache_key) and tenant.cache_enabled
     cached = exact.decode(limits.cached) if consulted and limits.cached else None
+    if consulted:
+        metrics.cache_lookup("exact", "hit" if cached is not None else "miss")
+    # The exact layer missed: ask the semantic one, by the last user message.
+    question = question_of(body) if consulted and cached is None and semantic else None
+    found = None
+    if question is not None:
+        assert semantic is not None
+        with timings.stage("cache-semantic"):
+            found = await semantic.find(tenant.tenant_id, question)
+        metrics.semantic_lookup(found.completion is not None, found.embedding, found.similarity)
+        if found.completion is not None:
+            assert found.entry_id is not None
+            semantic.touch(found.entry_id)
+            cached = found.completion
     if cached is not None:
         observation.cache = "HIT"
         return await _answer_from_cache(
@@ -218,6 +235,9 @@ async def chat_completions(
     meter.cache_status = cache_status
     if consulted:
         meter.cache_key = cache_key  # a miss: store the answer, once complete
+    if question is not None and found is not None and found.embedding is not None:
+        assert semantic is not None  # and in the semantic layer, by this embedding
+        meter.semantic_store = partial(semantic.store, tenant.tenant_id, question, found.embedding)
     headers = {**limits.headers(), "X-Tollgate-Cache": cache_status}
     if not req.stream:
         async with meter.measure():

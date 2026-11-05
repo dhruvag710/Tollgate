@@ -23,6 +23,8 @@ dependencies = [
     # httpcore imports sniffio on every call. Without it each attempt fails, and a
     # failed import isn't cached: it searches sys.path again, ~4 times a request.
     "sniffio>=1.3",
+    # The semantic cache's vectors, in Postgres (SQLAlchemy column type).
+    "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +37,18 @@ dev = [
     "mypy>=1.11",
     "types-PyYAML",
     "testcontainers[postgres,redis]>=4.8",
+]
+# The semantic cache's embedder (SPEC Phase 2.4). Pulls in PyTorch: install the
+# CPU-only wheel first (pip install torch --index-url
+# https://download.pytorch.org/whl/cpu) to keep it to a few hundred MB.
+semantic = [
+    "sentence-transformers>=3.0",
+]
+# The cache evaluation (bench/cache_eval, SPEC B4) and its charts.
+bench = [
+    "tollgate[semantic]",
+    "matplotlib>=3.8",
+    "psutil>=5.9",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -75,3 +89,8 @@ packages = ["tollgate"]
 [[tool.mypy.overrides]]
 module = ["mock_provider.*"]
 disallow_untyped_decorators = false
+
+# The semantic extra isn't installed in CI, and pgvector ships no type hints.
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*", "torch.*", "pgvector.*"]
+ignore_missing_imports = true

@@ -1,0 +1,13 @@
+cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
+cores_physical: 4
+cores_logical: 8
+cpu_max_mhz: 2701
+memory_bytes: 16805040128
+os: Windows-11-10.0.26300-SP0
+power_plan: Balanced
+power_mode: Best performance
+on_battery: False
+python: 3.13.14
+torch: 2.15.0+cpu
+sentence_transformers: 6.2.0
+torch_threads: 1
