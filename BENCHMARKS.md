@@ -32,8 +32,9 @@ been run.
 | B4 false hits, all-MiniLM-L6-v2 then an NLI cross-encoder, at 0.90 | ≤ 2% on both sets | QQP 1.64% (41/2,500), adversarial 1.57% (3/191) | yes |
 | B4 recall at that threshold | report it | QQP 24.4% (610/2,500), hard positives 42.9% (21/49) | – |
 | B4 miss path p99: embedding, then the lookup | < 25 ms | embedding alone 18.5 ms; the lookup is B5's to time | embedding share only |
-| B3 failed requests, from the kill to steady state (or the run's end) | < 1% at 300 RPS | 300 RPS: 37.11 to 95.65% (3 runs); 200 RPS: 1.33 to 2.87%; steady state never reached | no |
-| B3 control: the same kill, providers reached by IP address | – | 300 RPS: no request failed, in the whole run (0/34,496 and 0/35,159) or the failover window (0/2,695 and 0/2,015); steady in 14 and 9 s | – |
+| B3 failed requests with the primary killed, with the fix | < 1% at 300 RPS | 200 RPS: none in 5 runs (0/119,497); 300 RPS: none in 1 run (0/35,711) | yes |
+| B3 time to steady state, with the fix | report it | 200 RPS: 6 to 13 s; 300 RPS: 13 s | – |
+| B3 failed requests, from the kill on, before the fix | < 1% at 300 RPS | 300 RPS: 37.11 to 95.65% (3 runs); 200 RPS: 1.33 to 2.87%; steady state never reached | no |
 | B5 hit rate, semantic layer off / on (B5's workload) | report it | 61.6% (12,315/20,000) / 64.2% (12,838 and 12,831 of 20,000), 2 runs | – |
 | B5 cost saved, layer off / on | report it | 61.5% / 64.1% | – |
 | B5 latency p50 on hits, exact / semantic | report it | 2.8 to 3.0 ms / 177.9 and 191.8 ms (misses: 1,006 to 1,039 ms) | – |
@@ -294,31 +295,90 @@ Throttling is now recorded at every step, so the two cases can be told apart.
 ## B3: failover
 
 Whether requests survive their primary provider dying under load ([SPEC.md §9](SPEC.md),
-B3). Every number here was produced by [bench/run_v2.sh](bench/run_v2.sh) and
-[bench/b3_dns_check.sh](bench/b3_dns_check.sh), and computed by
-[bench/v2_report.py](bench/v2_report.py) from the raw output:
-- [bench/results/v2-20261105T155807Z/b3/](bench/results/v2-20261105T155807Z/b3/): the runs;
-- [bench/results/v2-20261105T170504Z/b3/](bench/results/v2-20261105T170504Z/b3/): the control
-  described below.
+B3). The first runs missed the target badly and found a defect in the gateway, since fixed:
+**with the fix, no request failed in any run.** Every number here was produced by
+[bench/run_v2.sh](bench/run_v2.sh) and [bench/b3_dns_check.sh](bench/b3_dns_check.sh), and
+computed by [bench/v2_report.py](bench/v2_report.py) from the raw output:
+- with the fix: [bench/results/v2-20261105T204303Z/b3/](bench/results/v2-20261105T204303Z/b3/),
+  and the reruns in [bench/results/v2-20261105T205840Z/b3/](bench/results/v2-20261105T205840Z/b3/);
+- before it: [bench/results/v2-20261105T155807Z/b3/](bench/results/v2-20261105T155807Z/b3/), and
+  the control in [bench/results/v2-20261105T170504Z/b3/](bench/results/v2-20261105T170504Z/b3/).
 
 | | |
 |---|---|
-| Machine | the v1 laptop, on mains power, Windows power mode Best performance. The host watcher flagged none of the six runs: no clock limit below 85% of the maximum, no impossible reading. |
+| Machine | the v1 laptop, on mains power, Windows power mode Best performance; each run's host conditions are in the table below |
 | Stack | the v1 benchmark limits: 3 gateway replicas (1 CPU, 512 MiB each) behind nginx (0.5 CPU), the primary mock (1.5 CPUs), Postgres, Redis, and k6 on the same Docker network. The secondary mock has no limits and keeps its access log, as in `docker-compose.yml`: the benchmark overlay never covered it. |
-| Run | 2026-11-05, 16:37 to 16:59 UTC; the control from 17:05 |
+| Run | with the fix: 2026-11-05, 20:43 to 21:06 UTC; before it: 16:37 to 16:59 UTC, the control from 17:05 |
 
-**Method** ([bench/k6/failover.js](bench/k6/failover.js)):
+**Method** ([bench/k6/failover.js](bench/k6/failover.js)), the same before and after the fix:
 - **Load:** B2's request (non-streamed, the mock answering at once), at a constant arrival rate,
   through nginx to 3 replicas created fresh for each run. Each run warms up for 10 s, then is
   measured for 120 s.
 - **The kill:** 40 s into the measured part, the primary mock is killed with `docker kill`.
   `gpt-4o-mini` routes to it first, then to the secondary.
-- **Rates:** 3 runs at each. SPEC's 300 RPS is above both of B2's ceilings (250 RPS with 1
-  replica, 275 with 3), so B3 also ran at 200 RPS, as B1 runs below its ceiling.
+- **Rates:** 200 RPS is the result; 300 RPS, SPEC's rate, is an overload note. It is above
+  B2's median ceiling with 3 replicas (275 RPS).
 - **Steady state:** the first second after the kill from which every 1 s bucket of a 10 s
   window has no failed request, and a p99 within twice the pre-kill p99 (or 10 ms of it).
 - **Failover window:** from the kill to steady state, or to the end of the run if it never
   came.
+
+### With the fix
+
+| Run | Failed, whole run | Failed in the failover window | Time to steady state | Primary's breaker open after | Slowest request (ms) | Timeouts at the secondary | Not started on time (k6) | Host |
+|---|---|---|---|---|---|---|---|---|
+| 200 RPS, run 1 | 0.00% (0/23,831) | 0.00% (0/1,231) | 7 s | 6.3 s | 1,181 | 0 | 169 | flagged: clock limit under 85% in 9 of 60 samples (lowest 108 MHz); 6 impossible readings |
+| 200 RPS, run 2 | 0.00% (0/23,833) | 0.00% (0/1,232) | 7 s | 6.2 s | 1,179 | 0 | 168 | no flags |
+| 200 RPS, run 3 | 0.00% (0/23,831) | 0.00% (0/1,031) | 6 s | 6.0 s | 1,186 | 0 | 169 | flagged: clock limit under 85% in 6 of 66 samples (lowest 1,728 MHz) |
+| 200 RPS, rerun of run 1, 300 VUs ready | 0.00% (0/24,001) | 0.00% (0/2,401) | 12 s | 6.0 s | 1,209 | 0 | 0 | no flags |
+| 200 RPS, rerun of run 3, 300 VUs ready | 0.00% (0/24,001) | 0.00% (0/2,600) | 13 s | 6.0 s | 1,202 | 0 | 0 | no flags |
+| 300 RPS, overload note | 0.00% (0/35,711) | 0.00% (0/3,611) | 13 s | 6.1 s | 1,524 | 0 | 289 | no flags |
+
+- **No request failed**, in 119,497 at 200 RPS and 35,711 at 300, and no replica timed out at
+  the secondary even once.
+- **What a request pays:** until the primary's breaker opens, 6.0 to 6.3 s after the kill, each
+  one waits out the 1.1 s connect timeout at the dead primary, then succeeds on the secondary.
+  After that, latency is back to normal. From the first rerun, with the seconds counted from the
+  kill:
+
+  | Second | Requests | Failed | p50 (ms) | p99 (ms) |
+  |---|---|---|---|---|
+  | -1 | 200 | 0 | 4.0 | 20.2 |
+  | 0 to 5 (each) | 200 | 0 | 1,105 to 1,106 | 1,126 to 1,194 |
+  | 6 | 200 | 0 | 4.5 | 45.5 |
+  | 7 | 200 | 0 | 3.9 | 14.2 |
+
+- **Time to steady state** is 6 to 13 s by the rule. The penalty ended with the breaker's opening
+  in every run. The rest is the rule's strict limit: with a 13 ms pre-kill p99, one second's p99
+  over about 26 ms restarts its 10 s window.
+- **k6 falling behind:** with 50 virtual users ready, it starts more only when all are busy, and
+  a kill stalls them all at once, so 168 to 169 requests per run weren't started on time.
+  With 300 ready, none were missed, and none of those requests failed either.
+- **Reruns:** runs 1 and 3 at 200 RPS were flagged for low clock limits, so they were run once
+  more, with no flags. All five are reported.
+- **The name lookups:** each replica first reported the killed primary's name gone 8 to 12 s
+  after the kill, after the breaker had opened, so in this benchmark the breaker did the work.
+  What the fix changed is that the lookups no longer hold anything up. One still takes 3 to 8 s
+  to fail ([dns-check.txt](bench/results/v2-20261105T204303Z/b3/dns-check.txt)), in the
+  background.
+
+**The fix** (SPEC Phase 2.1, [providers/resolver.py](src/tollgate/providers/resolver.py)): each
+provider hostname is looked up by a background thread every 5 s, one lookup at a time, and new
+connections only read the cached addresses. A name that no longer exists fails attempts at once,
+and each counts against the breaker. The connect timeout went from 3 s to 1.1 s.
+
+Before and after, at the same kill:
+
+| | Failed in the failover window, by run | Steady state | Slowest request (ms) | Primary's breaker open after |
+|---|---|---|---|---|
+| 200 RPS, before | 2.87%, 1.96%, 1.33% | never | 6,082, 6,059, 6,029 | 7.6 s |
+| 200 RPS, with the fix | 0, 0, 0 (and 0, 0 in the reruns) | 6 to 13 s | 1,179 to 1,209 | 6.0 to 6.3 s |
+| 300 RPS, before | 38.08%, 37.11%, 95.65% | never | 6,095, 6,151, 6,124 | 7.4 to 7.6 s |
+| 300 RPS, with the fix | 0 (one run) | 13 s | 1,524 | 6.1 s |
+
+### What the first runs found
+
+Connect timeout 3 s, and each new connection looked its provider's name up:
 
 | Run | Failed, whole run | Failed in the failover window | Time to steady state | Primary's breaker open after | Secondary's breaker | Retried on the secondary | Not started on time (k6) |
 |---|---|---|---|---|---|---|---|
@@ -331,10 +391,10 @@ B3). Every number here was produced by [bench/run_v2.sh](bench/run_v2.sh) and
 
 Every failure was a 504 `upstream_timeout` at the secondary, except in the third 300 RPS run:
 19,354 503s (`no_provider_available`), and 2 timeouts at the primary (its breaker's probes).
-No request failed before a kill.
+No request failed before a kill. The host watcher flagged none of these six runs.
 
-What happened, in each replica's own counts of its attempts at the secondary
-(successes / timeouts), with each run's failures in every 10 s after the kill:
+Each replica's own counts of its attempts at the secondary (successes / timeouts), with each
+run's failures in every 10 s after the kill:
 
 | Run | Replica 1 | Replica 2 | Replica 3 | Failures per 10 s after the kill |
 |---|---|---|---|---|
@@ -345,10 +405,10 @@ What happened, in each replica's own counts of its attempts at the secondary
 | 300 RPS, run 2 | 7,182 / 226 | 6,709 / 710 | **104 / 7,314** | 674, 1,154, 1,137, 1,123, 1,124, 1,100, 1,090, 848 |
 | 300 RPS, run 3 | 726 / 55 | 112 / 668 | 112 / 669 | 855, 2,659, 2,999, 3,001, 3,000, 3,000, 3,001, 2,233 |
 
-- **Until the primary's breaker opens, every request pays the 3 s connect timeout** at the dead
-  primary, then fails over. The breaker opened 7.4 to 7.6 s after the kill: a failure only
+- **Until the primary's breaker opened, every request paid the 3 s connect timeout** at the dead
+  primary, then failed over. The breaker opened 7.4 to 7.6 s after the kill: a failure only
   counts once its timeout has run out.
-- **Then the healthy secondary fails as well.** Connecting to it timed out (504):
+- **Then the healthy secondary failed as well.** Connecting to it timed out (504):
   - At 300 RPS, in two of the three runs, one replica never recovered. It failed nearly every
     request it got for the rest of the run, while the other two recovered.
   - In the third run the secondary's own breaker opened 12.9 s after the kill, on those
@@ -356,19 +416,15 @@ What happened, in each replica's own counts of its attempts at the secondary
     stayed open, and the next probe came at the end of the run.
   - At 200 RPS no replica stuck, but a trickle of timeouts went on to the end of every run, so
     none reached steady state.
-- **The trigger is the lookup of the vanished primary's name.**
-  - Killing a container drops its name from Docker's DNS, and a lookup of it then goes to the
-    host's resolver. [b3_dns_check.sh](bench/b3_dns_check.sh) timed lookups from a gateway
-    container ([dns-check.txt](bench/results/v2-20261105T155807Z/b3/dns-check.txt)): the
-    killed primary's name took 3,119 to 8,006 ms to fail, the secondary's resolved in 2 ms, and
-    both took 2 to 3 ms with the primary up.
-  - The gateway runs on uvloop, which resolves names on libuv's thread pool: 4 threads per
-    process. A lookup keeps its thread after the connect timeout has given up on it, so lookups
-    of the dead name can fill the pool. The secondary's lookups then wait behind them.
-- **The control confirms the lookups are the trigger.** The control was the same kill at 300 RPS, 2 runs, with the gateways
-  reaching both mocks by IP address
-  ([bench/docker-compose.b3-by-ip.yml](bench/docker-compose.b3-by-ip.yml)), so no name is looked
-  up:
+- **The trigger was the lookup of the vanished primary's name.** Killing a container drops its
+  name from Docker's DNS, and a lookup of it then goes to the host's resolver.
+  [b3_dns_check.sh](bench/b3_dns_check.sh) timed lookups from a gateway container
+  ([dns-check.txt](bench/results/v2-20261105T155807Z/b3/dns-check.txt)): the killed primary's name
+  took 3,119 to 8,006 ms to fail, the secondary's resolved in 2 ms, and both took 2 to 3 ms with
+  the primary up.
+- **The control confirmed it.** The same kill at 300 RPS, 2 runs, with the gateways reaching both
+  mocks by IP address ([bench/docker-compose.b3-by-ip.yml](bench/docker-compose.b3-by-ip.yml)), so
+  no name is looked up:
   - no request failed: 0.00% (0/34,496 and 0/35,159);
   - no replica timed out at the secondary even once;
   - steady state came 14 s and 9 s after the kill;
@@ -377,16 +433,25 @@ What happened, in each replica's own counts of its attempts at the secondary
 
   The host watcher flagged both control runs for clock limits under 85% (lowest 486 and
   189 MHz). A throttled CPU could only have added failures.
-- **Not explained:** why, at 200 RPS, the secondary kept timing out at a low rate long after the
-  primary's breaker had opened. The breaker's probes start one lookup of the dead name every
-  30 s, which doesn't account for it.
+- **Why it lasted so long, and the trickle: a lookup given up on isn't cancelled.** The gateway
+  runs on uvloop, which queues lookups on libuv's small thread pool, and nothing removes one
+  from the queue when its caller stops waiting.
+  [b3_lookup_backlog.py](bench/b3_lookup_backlog.py) does what requests did, on its own
+  ([dns-check.txt](bench/results/v2-20261105T204303Z/b3/dns-check.txt)): with nothing queued, a
+  lookup of the healthy name took 0.006 s. After 24 lookups of the killed name, all given up on
+  within 3.0 s, the same lookup took **43.1 s**, which matches about two at a time at 3.85 s each.
+  - Each replica gave up on about 390 lookups before the breaker opened at 300 RPS (its
+    `connect` timeouts at the primary), so about 12 minutes of backlog, far more than the 80 s
+    left in the run.
+  - That fits every pattern above. Connections already open needed no lookup and kept working,
+    so a replica with some served most requests. Each new connection it needed timed out behind
+    the backlog: the trickle at 200 RPS. A replica with almost none failed nearly everything:
+    the stuck replicas at 300 RPS.
+  - With the fix the trickle didn't persist: no replica timed out at the secondary in any of the
+    six runs.
 - **k6 fell behind during the failover.** 439 to 1,544 requests per run weren't started on time:
   all of its 600 virtual users were waiting out 3 to 6 s timeouts. Those requests are missing from
-  the rates above. The cap is k6's memory on this machine.
-
-With no lookups in the way, failover works: the router skips the dead provider once its
-breaker opens, and no request failed. The gateway wasn't changed in this round to keep a
-vanished provider's name from holding up the others' lookups.
+  the rates above.
 
 ## B4: semantic cache evaluation
 
@@ -693,7 +758,7 @@ The lookup as the cache grew (layer on, run 2; run 1 is in its report.md):
   layer's 61.6%, and 64.1% of the cost saved against 61.5%. The exact layer did most of the
   work, because Zipf traffic repeats itself word for word.
 - **The miss path misses its 25 ms budget**: 91.4 and 103.0 ms at p99, about four times the
-  target; the p50, 25.2 and 27.5 ms, is at the budget. So **Phase 2.4's acceptance isn't met**.
+  target; the p50, 25.2 and 27.5 ms, is at the budget. So the layer stays off by default, and Phase 2.4 closes on this result (SPEC.md).
   Both halves of the miss path grow under load:
   - **The lookup** searches every entry in scope, and its time grows with the cache: p99 from
     14.7 ms (run 2, first quarter, up to 2,010 entries) to 74.5 ms (last quarter, up to 7,020).
@@ -765,8 +830,9 @@ python bench/report.py bench/results/<timestamp>  # the result tables, from the 
 python bench/compare.py bench/results/<before> bench/results/<after>  # a before/after table
 python bench/workloads/make_workload.py --text  # B5's workload text, downloaded and checked
 PYTHON=.venv/bin/python bash bench/run_v2.sh   # B5 then B3: ~75 minutes; bench/results/v2-<UTC timestamp>/
+PARTS=b3 B3_RATES="200:3 300:1" bash bench/run_v2.sh  # B3 alone: runs at each rate; B3_PRE_VUS=300 for no k6 drops
 PARTS=b3 B3_BY_IP=1 B3_LABEL=by-ip bash bench/run_v2.sh  # B3's control: providers by IP address
-bash bench/b3_dns_check.sh <out>               # name lookups with the primary killed (stack up)
+bash bench/b3_dns_check.sh <out>               # name lookups, and their backlog, with the primary killed (stack up)
 python bench/v2_report.py bench/results/v2-<timestamp>  # B5's and B3's tables
 ```
 
@@ -782,7 +848,8 @@ Each step leaves these files:
 
 `environment.txt` records the host, Docker, k6, the parameters and each container's
 limits, `cpu.max` and healthcheck. A `run_v2.sh` part leaves, besides k6's summary:
-- `<part>.records.jsonl`: a line per request, with no text and no keys;
+- `<part>.records.jsonl`: a line per request, with no text and no keys, committed gzipped
+  (`v2_report.py` reads either);
 - `<part>.host.jsonl`: the host watcher's samples;
 - `<part>.counters-before.txt` and `<part>.counters-after.txt`: each container's cgroup CPU
   and memory counters;

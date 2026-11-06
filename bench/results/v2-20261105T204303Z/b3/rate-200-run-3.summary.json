@@ -1,0 +1,12 @@
+{
+ "rate": 200,
+ "warmup_s": 10,
+ "duration_s": 120,
+ "tenant": "60a0ca86-527d-470b-9993-a245965707fb",
+ "requests": 23831,
+ "error_rate": 0,
+ "dropped": 169,
+ "p50_ms": 3.882831,
+ "p99_ms": 1107.2151941,
+ "max_ms": 1185.549828
+}

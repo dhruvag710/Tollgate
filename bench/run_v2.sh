@@ -8,9 +8,10 @@
 #       non-cacheable request probes the gateway's overhead meanwhile. First,
 #       the gateway's models are checked against B4's numbers
 #       (bench/cache_eval/check_gateway_models.py).
-#   B3  failover: B3_RUNS runs at each of B3_RATES through nginx to 3 gateway
-#       replicas (bench/k6/failover.js); B3_KILL_AT_S into each run's measured
-#       part the primary mock is killed (docker kill), and restarted after.
+#   B3  failover: B3_RUNS runs at each of B3_RATES (RATE, or RATE:RUNS for its own
+#       number of runs) through nginx to 3 gateway replicas (bench/k6/failover.js);
+#       B3_KILL_AT_S into each run's measured part the primary mock is killed
+#       (docker kill), and restarted after.
 #
 # Everything lands in bench/results/v2-<UTC timestamp>/; bench/v2_report.py
 # turns it into the tables in BENCHMARKS.md. With the defaults this takes about
@@ -42,6 +43,7 @@ B3_RUNS=${B3_RUNS:-3}
 B3_WARMUP_S=${B3_WARMUP_S:-10}
 B3_DURATION_S=${B3_DURATION_S:-120}
 B3_KILL_AT_S=${B3_KILL_AT_S:-40}
+B3_PRE_VUS=${B3_PRE_VUS:-50}  # k6 VUs ready before the kill (up to 600 on demand)
 # B3_BY_IP=1: the gateways reach the mocks by IP address, not by name
 # (bench/docker-compose.b3-by-ip.yml), so a killed primary costs no name
 # lookups: the control for what lookups of a vanished name do to failover.
@@ -136,7 +138,7 @@ record_environment() {
   echo "parameters: PARTS=\"$PARTS\" B5_RATE=$B5_RATE B5_PROBE_RATE=$B5_PROBE_RATE B5_IDLE_S=$B5_IDLE_S" \
        "B5_LIMIT=$B5_LIMIT B5_MOCK_LATENCY_MS=$B5_MOCK_LATENCY_MS B5_OUTPUT_TOKENS=$B5_OUTPUT_TOKENS" \
        "B5_CONFIGS=\"$B5_CONFIGS\" B3_RATES=\"$B3_RATES\" B3_RUNS=$B3_RUNS B3_WARMUP_S=$B3_WARMUP_S" \
-       "B3_DURATION_S=$B3_DURATION_S B3_KILL_AT_S=$B3_KILL_AT_S"
+       "B3_DURATION_S=$B3_DURATION_S B3_KILL_AT_S=$B3_KILL_AT_S B3_PRE_VUS=$B3_PRE_VUS"
   "$PYTHON" -c "import sys; sys.path.insert(0, 'bench/cache_eval'); import machine; print(machine.as_text(machine.describe()))" \
     | sed 's/^/host /'
   echo "host memory: $(host_memory)"
@@ -238,9 +240,12 @@ b3() {
   "${B3C[@]}" up -d --wait --force-recreate --scale gateway=3 >/dev/null 2>&1
   b3_scale
   containers > "$RESULTS/b3/containers.txt"
-  local rate run
-  for rate in $B3_RATES; do
-    for run in $(seq 1 "$B3_RUNS"); do
+  local spec rate runs run
+  for spec in $B3_RATES; do
+    rate=${spec%%:*}
+    runs=$B3_RUNS
+    [ "$spec" = "$rate" ] || runs=${spec#*:}
+    for run in $(seq 1 "$runs"); do
       local name="rate-$rate${B3_LABEL:+-$B3_LABEL}-run-$run"
       local out="$RESULTS/b3/$name"
       primary_up
@@ -256,10 +261,10 @@ b3() {
       drop_caches "$out"
       counters > "$out.counters-before.txt"
       watch_start "$out"
-      log "B3: $rate RPS, run $run/$B3_RUNS: killing the primary at ${B3_KILL_AT_S}s"
+      log "B3: $rate RPS, run $run/$runs: killing the primary at ${B3_KILL_AT_S}s"
       "${BASE[@]}" --profile bench run --rm -T \
         -e TARGET=http://nginx:8000 -e RATE="$rate" -e WARMUP_S="$B3_WARMUP_S" \
-        -e DURATION_S="$B3_DURATION_S" -e OUT="/results/$NAME/b3/$name" \
+        -e DURATION_S="$B3_DURATION_S" -e PRE_VUS="$B3_PRE_VUS" -e OUT="/results/$NAME/b3/$name" \
         k6 run --quiet --no-color --log-format=raw \
         --log-output="file=/results/$NAME/b3/$name.records.jsonl" /scripts/failover.js \
         > "$out.log" 2>&1 &

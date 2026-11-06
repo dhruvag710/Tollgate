@@ -96,7 +96,8 @@ tollgate/
 │   │   ├── base.py                # Provider protocol
 │   │   ├── openai_compat.py       # OpenAI, OpenRouter, Ollama, mock
 │   │   ├── gemini.py              # v2 (via OpenAI-compatible endpoint or adapter)
-│   │   └── registry.py            # builds providers from YAML
+│   │   ├── registry.py            # builds providers from YAML
+│   │   └── resolver.py            # v2: hostnames looked up in the background
 │   ├── routing/
 │   │   ├── router.py              # v1: static; v2: priority + failover
 │   │   └── circuit_breaker.py     # v2, state in Redis
@@ -290,7 +291,7 @@ providers:
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
     timeout_s: 60
-    connect_timeout_s: 3
+    connect_timeout_s: 1.1
   - name: openrouter
     type: openai_compat
     base_url: https://openrouter.ai/api/v1
@@ -406,8 +407,10 @@ Prices are config values. Verify them against provider pricing pages before repo
 - Retry on the next provider **only if no bytes have been sent to the client**
 - Retry on: connect error, timeout before first byte, 5xx, upstream 429, upstream 401/403. Never retry other 4xx (client errors), and never retry a failure after the provider's first byte, even before the client has any: the provider may bill a completion it has started.
 - If every route's breaker is OPEN: 503 (`no_provider_available`) with `Retry-After`, no provider called
+- **No request ever waits on a name lookup** (`providers/resolver.py`). Each provider hostname has a background thread that looks it up every `PROVIDER_DNS_REFRESH_S` (default 5 s), one lookup at a time, so a name that hangs holds up nothing but itself; new connections only read the cached addresses. When the resolver says a name doesn't exist, nothing is kept: connecting fails at once, the attempt counts against the provider's breaker as a connect error, and the request fails over with no time lost. A lookup that gets no answer (the resolver is down or timed out) keeps the cached addresses, so a resolver's outage can't take down providers that are still up; with none cached, connecting fails at once. A connection already open needs no lookup and goes on working. TLS still verifies the provider's hostname. With an HTTP proxy configured, the proxy resolves the names and none of this applies.
+- The connect timeout defaults to 1.1 s: what a provider that can't be connected to costs a request before it fails over, and just past TCP's 1 s retransmission of a lost SYN, so one lost packet doesn't count as a dead provider.
 - `attempts` recorded in the usage event (§4)
-- ✅ Accept: see chaos tests X1–X3
+- ✅ Accept: see chaos tests X1–X3; a provider whose name stops resolving doesn't slow requests to the healthy one (`tests/integration/test_provider_dns.py`)
 
 **Phase 2.2: Durable usage pipeline**
 - Replace the in-process queue with a Redis Stream (`XADD`) and a consumer group worker (`XREADGROUP` → batch insert → `XACK`)
@@ -427,7 +430,7 @@ Prices are config values. Verify them against provider pricing pages before repo
 **Phase 2.4: Semantic cache**
 - **Cacheability policy** (`policy.py`, built in Phase 2.3 and governing both layers): only when `temperature <= 0.3` (configurable; a request without one runs at the provider's default, 1, so is never cached), `n` is 1, no tools/function calls (none offered, none in the conversation), tenant has cache enabled, and the client didn't send `X-Tollgate-Cache: bypass`
 - **Scope:** `scope_hash` = hash(model, system prompt, all messages except the last user message, params). Only the **last user message** is embedded. Entries only match within the same scope and tenant. This prevents "same question, different conversation" false hits. Concretely, the scope is the exact-match key (Phase 2.3) of the request with its last message taken out; a request whose last message isn't a user message with text is looked up in the exact layer only.
-- Lookup: top-1 by cosine similarity within scope, a candidate if `similarity >= threshold`, then checked (below). It runs only after an exact-layer miss, in Postgres (`cache_entries`, pgvector), as an exact search of the tenant's unexpired entries in that scope (found through the `(tenant_id, scope_hash)` index), so no other tenant's entries can hide or change the answer. There is no approximate index: with 3,000 of another tenant's vectors identical to the query (the same question cached by many tenants), an HNSW index filtered by tenant missed the tenant's nearest entry in most builds tested, iterative scan or not. If B5's lookup p99 misses its target, HNSW is the fallback, with that blind spot documented.
+- Lookup: top-1 by cosine similarity within scope, a candidate if `similarity >= threshold`, then checked (below). It runs only after an exact-layer miss, in Postgres (`cache_entries`, pgvector), as an exact search of the tenant's unexpired entries in that scope (found through the `(tenant_id, scope_hash)` index), so no other tenant's entries can hide or change the answer. There is no approximate index: with 3,000 of another tenant's vectors identical to the query (the same question cached by many tenants), an HNSW index filtered by tenant missed the tenant's nearest entry in most builds tested, iterative scan or not. HNSW was the fallback if B5's lookup p99 missed its target; it did, along with the embedding's share, and the phase closed with the layer off by default instead (below).
 - Thresholds are chosen from the cache evaluation (section 9, B4), not by vibes. The semantic layer is off by default: it stays off until its models and thresholds are set.
 - B4's result (BENCHMARKS.md): no embedding model alone meets the false-hit target at any threshold, because questions with the same words in a different order embed almost identically. With an NLI cross-encoder checking the candidate after the embedding model finds it, the target is met. So the layer has **two stages**: `all-MiniLM-L6-v2` passes the nearest entry as a candidate at a similarity of at least `SEMANTIC_CACHE_THRESHOLD` (B4: 0.68, which keeps 95% of QQP's duplicates), and `cross-encoder/nli-deberta-v3-xsmall` (`SEMANTIC_CACHE_VERIFIER`) reads the candidate's question and the request's together; it is a hit only if each entails the other, the lesser entailment probability at least `SEMANTIC_CACHE_VERIFIER_THRESHOLD` (B4: 0.90). The layer is on only when all four are set (an embedding model alone is refused: B4 found it can't meet the target); `docker-compose.semantic.yml` sets them, with each model pinned to the revision B4 measured.
 - **Each model runs in a bounded thread pool of its own** (`pool.py`), off the event loop: one thread (a replica runs on one CPU, and a model's tokenizer can't be used by two threads at once) and room for `SEMANTIC_CACHE_QUEUE_SIZE` calls waiting (default 4). Two pools, so a check, about ten times the embedding's cost, never holds up an embedding on the miss path. A request that finds a pool full skips the layer: a miss, at once.
@@ -440,8 +443,12 @@ Prices are config values. Verify them against provider pricing pages before repo
 - Stream replay: cached response re-emitted as SSE chunks so streaming clients work unchanged
 - TTL per entry (default 24h); usage event records `saved_cost_usd`. A hit is free beyond RPM, as an exact-layer hit is (Phase 2.3). A miss stores its complete answer afterwards, off the response path.
 - Latency budget, split by outcome: the **miss path** (embed the question, then the Postgres lookup) must stay under 25 ms at p99, since every miss pays it before its provider call. The **hit path** (the miss path, plus any check a candidate must pass) is reported separately, with no target: a hit replaces a provider call that takes seconds.
-- ✅ Accept: miss-path p99 meets target; false-hit rate at chosen threshold meets target on the eval set
-- **Result** (BENCHMARKS.md): B4 meets the false-hit target; **B5 doesn't meet the latency target**, so the acceptance isn't met, and the layer stays off by default. On one replica (1 CPU) at 20 requests/s, the miss path's p99 was 91 and 103 ms in two runs, against 25 ms. Both halves grow under load. The exact lookup grows with the entries in scope: p99 75 ms by 7,000. The embedding shares the replica's CPU with the checks: p99 51 to 56 ms, against B4's 18.5 ms alone. HNSW, the fallback named above, would shorten only the lookup, so it hasn't been switched on. What to do about the embedding's share (more CPU for a replica with the layer on, the check at a lower priority than everything else, or a budget that allows for it) is undecided.
+- ✅ Accept (amended once B5 had reported): the false-hit rate at the chosen threshold meets its target on the eval set, B5's result below is recorded, and the layer ships **off by default**. The original criterion, a miss-path p99 under 25 ms, wasn't met, and the phase closes without it, on this trade-off.
+- **B5's result** (BENCHMARKS.md; B5's workload, one replica with 1 CPU, 20 requests/s, two runs):
+  - **The gain:** 2.6 points of hit rate over exact caching, 64.2% against 61.6%, and 2.6 points of cost saved, 64.1% against 61.5%. False hits stayed within target: 1.57% and 1.05% of the near-misses.
+  - **The cost, on the miss path:** a p99 of 91 and 103 ms against the 25 ms target, paid before every miss's provider call. Both halves grow under load: the exact lookup with the entries in scope (p99 75 ms by 7,000), and the embedding, which shares the replica's CPU with the checks (p99 51 to 56 ms, against B4's 18.5 ms alone).
+  - **The cost, on requests the cache can't serve:** their overhead's p99 during the replay was 19 and 35 ms with the layer on, against 11 ms with it off, since the models throttle a 1-CPU replica.
+  - **So a deployment turns the layer on by choice**, knowing this trade-off. HNSW, the fallback named above, hasn't been switched on: it would shorten only the lookup, and bring back its blind spot. A dedicated embedding service is future work (v3).
 
 **Phase 2.5: Sliding window limiter (comparison)**
 - Implement `sliding_window.lua` (sorted-set log), selectable per tenant
@@ -454,6 +461,7 @@ Prices are config values. Verify them against provider pricing pages before repo
 
 ### v3 — Polish (optional)
 
+- Dedicated embedding service: the semantic cache's two models run outside the gateway process, so their CPU can't throttle a replica or slow requests that never touch them, the costs that keep the layer off by default (Phase 2.4). B5's numbers are the baseline to beat, with the service's own round trip counted in the miss path.
 - Complexity-based routing: a simple classifier or heuristic sends easy prompts to a cheap model. Measure cost saved vs. quality loss on a small labeled set with an LLM-as-judge, and report both numbers or skip the feature.
 - Grafana dashboard provisioned in Compose
 - Per-tenant monthly invoice export (CSV/PDF) from the ledger
@@ -566,9 +574,9 @@ Replay (`bench/k6/cache_workload.js`, run by `bench/run_v2.sh`):
 - Alongside: B1's non-cacheable request, through the gateway and straight to the mock at once, 20/s each, first on its own and then during the replay. The difference is the gateway's overhead for requests the cache can't serve, with the layer on and off.
 - Reported, with counts: hit rates by layer and request kind, false hits, cost saved (from the ledger), latency of hits and misses, the miss path (embed, its wait, lookup) and hit path (plus the check) from Server-Timing, the rejected-candidate rate and its cost, the layer's skips, and the gateway's CPU and memory.
 
-B3 as built (`bench/k6/failover.js`, run by `bench/run_v2.sh`): B2's non-streamed request through nginx to 3 fresh replicas, 3 runs at each rate. Each run warms up for 10 s, then is measured for 120 s, with `docker kill` of the primary mock 40 s in. SPEC's 300 RPS is above both B2 ceilings (250 RPS with 1 replica, 275 with 3), so B3 also runs at 200 RPS, as B1 runs below its ceiling. Time to steady state is from the kill to the first 10 s in which no request fails and every second's p99 is within twice the pre-kill p99.
+B3 as built (`bench/k6/failover.js`, run by `bench/run_v2.sh`): B2's non-streamed request through nginx to 3 fresh replicas. Each run warms up for 10 s, then is measured for 120 s, with `docker kill` of the primary mock 40 s in. SPEC's 300 RPS is above both B2 ceilings (250 RPS with 1 replica, 275 with 3), so B3 also runs at 200 RPS, as B1 runs below its ceiling, and 300 RPS is an overload note. Time to steady state is from the kill to the first 10 s in which no request fails and every second's p99 is within twice the pre-kill p99.
 
-B3's result (BENCHMARKS.md): the target isn't met: 37 to 96% of requests failed from the kill on at 300 RPS, and 1.3 to 2.9% at 200 RPS. Steady state never came within the 80 s after the kill. Killing a container drops its name from Docker's DNS, and a lookup of it then takes 3 to 8 s to fail. Those lookups fill the resolver threads of each gateway process (uvloop's 4), so lookups for the healthy secondary wait past its 3 s connect timeout too. In one run the secondary's own breaker opened on the timeouts. With the providers reached by IP address, the same kill failed no request. Keeping a vanished provider's name lookups from holding up the others' (for example, resolving each provider apart from the request path, or giving the lookups their own threads and a timeout below the connect timeout) is undecided.
+B3's result (BENCHMARKS.md): with Phase 2.1's background name lookups, no request failed in 5 runs at 200 RPS (0/119,497) and 1 at 300 (0/35,711), and steady state came 6 to 13 s after the kill. Until the primary's breaker opens, about 6 s after the kill, each request waits out the connect timeout and then succeeds on the secondary. The first runs missed the target (37 to 96% of requests failed from the kill on at 300 RPS, 1.3 to 2.9% at 200 RPS) and found why: a killed container's name takes seconds to fail to resolve, a lookup a request gives up on stays queued on the event loop's few lookup threads, and the healthy provider's lookups waited behind them.
 
 ---
 
@@ -579,7 +587,7 @@ B3's result (BENCHMARKS.md): the target isn't met: 37 to 96% of requests failed 
 - Admin endpoints require a separate admin token
 - Rate limiting and auth fail **closed** if Redis is down (503), not open
 - Request body size limit (e.g. 1 MB)
-- Upstream timeouts: connect 3s, first byte configurable, total configurable
+- Upstream timeouts: connect 1.1 s, first byte configurable, total configurable
 
 ---
 

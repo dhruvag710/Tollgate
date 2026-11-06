@@ -323,7 +323,10 @@ async def test_when_every_provider_fails_the_last_answer_is_relayed(
 async def test_when_every_provider_is_unreachable_the_last_error_is_returned(
     tmp_path: Path,
 ) -> None:
-    async with gateway(providers_config(tmp_path, dead_url(), dead_url())) as g:
+    # Room for the refusal to arrive: a refused connect takes Windows about 2 s.
+    room = {"connect_timeout_s": 5}
+    config = providers_config(tmp_path, dead_url(), dead_url(), secondary_overrides=room, **room)
+    async with gateway(config) as g:
         r = await g.chat()
     assert r.status_code == 502, r.text
     assert r.json()["error"]["code"] == "upstream_unreachable"

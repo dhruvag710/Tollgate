@@ -14,6 +14,7 @@ bench/workloads/make_workload.py --text), and a semantic hit is checked
 against the question it served.
 """
 
+import gzip
 import hashlib
 import json
 import math
@@ -66,10 +67,20 @@ def p50_p99(values: Sequence[float], digits: int = 1) -> str:
     return f"{ms(pct(values, 50), digits)} / {ms(pct(values, 99), digits)}"
 
 
+def records_text(path: Path) -> str | None:
+    """A results file, or its gzipped form (the per-request records are
+    committed gzipped); None if it is neither."""
+    packed = path.with_name(path.name + ".gz")
+    if packed.exists():
+        return gzip.decompress(packed.read_bytes()).decode("utf-8")
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
 def jsonl(path: Path) -> Iterable[dict[str, Any]]:
-    if not path.exists():
+    text = records_text(path)
+    if text is None:
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if line.startswith("{"):
             try:
                 yield json.loads(line)
@@ -78,11 +89,8 @@ def jsonl(path: Path) -> Iterable[dict[str, Any]]:
 
 
 def failures_logged(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    return [
-        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("failure")
-    ]
+    text = records_text(path) or ""
+    return [line for line in text.splitlines() if line.startswith("failure")]
 
 
 def counters(path: Path) -> dict[str, dict[str, int]]:

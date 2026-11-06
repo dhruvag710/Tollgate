@@ -1,0 +1,36 @@
+started_utc: 2026-11-05T21:06:42Z
+gateway container: /tollgate-bench-gateway-1
+resolver:  nameserver 127.0.0.11 options ndots:0  
+primary-up mock_provider 3 ms 172.19.0.3
+primary-up mock_provider 2 ms 172.19.0.3
+primary-up mock_provider 2 ms 172.19.0.3
+primary-up mock_provider 2 ms 172.19.0.3
+primary-up mock_provider 2 ms 172.19.0.3
+primary-up mock_provider_secondary 2 ms 172.19.0.2
+primary-up mock_provider_secondary 2 ms 172.19.0.2
+primary-up mock_provider_secondary 2 ms 172.19.0.2
+primary-up mock_provider_secondary 2 ms 172.19.0.2
+primary-up mock_provider_secondary 2 ms 172.19.0.2
+primary-killed mock_provider 7852 ms not found
+primary-killed mock_provider 3848 ms not found
+primary-killed mock_provider 3864 ms not found
+primary-killed mock_provider 3862 ms not found
+primary-killed mock_provider 3847 ms not found
+primary-killed mock_provider_secondary 2 ms 172.19.0.2
+primary-killed mock_provider_secondary 2 ms 172.19.0.2
+primary-killed mock_provider_secondary 2 ms 172.19.0.2
+primary-killed mock_provider_secondary 2 ms 172.19.0.2
+primary-killed mock_provider_secondary 2 ms 172.19.0.2
+backlog healthy name, nothing queued: 0.006 s
+backlog 24 lookups of the killed name, all given up on within 3.0 s
+backlog healthy name, once those were given up on: 43.1 s
+primary-back mock_provider 2 ms 172.19.0.3
+primary-back mock_provider 2 ms 172.19.0.3
+primary-back mock_provider 2 ms 172.19.0.3
+primary-back mock_provider 2 ms 172.19.0.3
+primary-back mock_provider 2 ms 172.19.0.3
+primary-back mock_provider_secondary 2 ms 172.19.0.2
+primary-back mock_provider_secondary 2 ms 172.19.0.2
+primary-back mock_provider_secondary 2 ms 172.19.0.2
+primary-back mock_provider_secondary 2 ms 172.19.0.2
+primary-back mock_provider_secondary 2 ms 172.19.0.2

@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Any
+from urllib.request import getproxies
 
 import anyio
 import httpx
@@ -32,6 +33,7 @@ from tollgate.observability.logging import configure_logging, request_id_var
 from tollgate.observability.metrics import Metrics, Observation
 from tollgate.observability.timing import Timings
 from tollgate.providers.registry import ProviderRegistry
+from tollgate.providers.resolver import ProviderResolver, ResolvedTransport, provider_hosts
 from tollgate.ratelimit import estimate
 from tollgate.ratelimit.limiter import RateLimiter
 from tollgate.redis_pool import create_redis, open_connections
@@ -46,6 +48,9 @@ log = logging.getLogger(__name__)
 # How long shutdown waits for requests it cut off to record their usage (and
 # for the breaker reports still running).
 USAGE_RECORD_TIMEOUT_S = 2.0
+# How long a starting gateway waits for the first lookup of each provider's
+# hostname, so its first requests have addresses to connect to.
+PROVIDER_LOOKUP_WAIT_S = 2.0
 CHAT_PATH = "/v1/chat/completions"
 
 
@@ -256,6 +261,7 @@ def create_app(
         )
         semantic: SemanticCache | None = None
         sweeper: asyncio.Task[None] | None = None
+        resolver: ProviderResolver | None = None
         if writer is not None:
             writer.start(postgres_writer(app.state.sessions))
         try:
@@ -269,7 +275,19 @@ def create_app(
             await open_connections(
                 redis, min(settings.redis_min_connections, settings.redis_max_connections)
             )
-            async with httpx.AsyncClient(transport=upstream_transport, limits=limits) as client:
+            transport = upstream_transport
+            # With a proxy configured, httpx goes through it, and the proxy
+            # resolves the providers' names: the resolver has no part in that.
+            if transport is None and not getproxies():
+                resolver = ProviderResolver(
+                    provider_hosts(providers_file),
+                    refresh_s=settings.provider_dns_refresh_s,
+                    on_lookup=metrics.provider_lookup,
+                )
+                resolver.start()
+                await resolver.wait_ready(PROVIDER_LOOKUP_WAIT_S)
+                transport = ResolvedTransport(resolver, limits=limits)
+            async with httpx.AsyncClient(transport=transport, limits=limits) as client:
                 registry = ProviderRegistry.from_config(providers_file, client)
                 app.state.router = Router(registry, breakers, metrics)
                 yield
@@ -279,6 +297,8 @@ def create_app(
                     if semantic is not None:
                         await semantic.wait_idle()
         finally:
+            if resolver is not None:
+                resolver.stop()
             if sweeper is not None:
                 sweeper.cancel()
             if semantic is not None:

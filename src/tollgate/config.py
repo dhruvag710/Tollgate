@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     max_request_body_bytes: int = 1_048_576
     upstream_max_connections: int = 1000
     upstream_max_keepalive: int = 200
+    # How often each provider's hostname is looked up, in the background: no
+    # request ever waits on a lookup (providers/resolver.py).
+    provider_dns_refresh_s: float = Field(default=5.0, gt=0)
     log_level: str = "INFO"
     # uvicorn's worker count (it reads WEB_CONCURRENCY itself); metrics assume one.
     web_concurrency: int = 1
@@ -149,7 +152,10 @@ class ProviderConfig(BaseModel):
     # Each read from the provider; also the wait for the first byte, unless
     # first_byte_timeout_s is shorter.
     timeout_s: float = Field(default=60.0, gt=0)
-    connect_timeout_s: float = Field(default=3.0, gt=0)
+    # About a second: a provider that can't be connected to costs a request
+    # this much before it fails over. A little over 1 s, since TCP resends a
+    # lost SYN at 1 s, so one lost packet doesn't count as a dead provider.
+    connect_timeout_s: float = Field(default=1.1, gt=0)
     # How long, from sending the request, to wait for the first byte of the
     # response: for a stream, its first chunk; otherwise the response itself.
     # A request that times out before it fails over to the next provider.

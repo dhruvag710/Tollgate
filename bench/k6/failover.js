@@ -25,6 +25,9 @@ const ADMIN_TOKEN = __ENV.ADMIN_TOKEN || 'dev-only-admin-token';
 const RATE = Number(__ENV.RATE || 300);
 const WARMUP_S = Number(__ENV.WARMUP_S || 10);
 const DURATION_S = Number(__ENV.DURATION_S || 120);
+// k6 starts more VUs only as it needs them, and until they are ready it doesn't
+// start requests on time: enough here, and none go missing when a kill stalls them.
+const PRE_VUS = Number(__ENV.PRE_VUS || 50);
 const OUT = __ENV.OUT || '/results/b3';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -44,7 +47,7 @@ export const options = {
     },
     load: {
       executor: 'constant-arrival-rate', rate: RATE, timeUnit: '1s', duration: `${DURATION_S}s`,
-      startTime: `${WARMUP_S}s`, preAllocatedVUs: 50, maxVUs: 600, exec: 'chat',
+      startTime: `${WARMUP_S}s`, preAllocatedVUs: PRE_VUS, maxVUs: 600, exec: 'chat',
       gracefulStop: '30s',
     },
     breakers: {

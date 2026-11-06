@@ -118,7 +118,7 @@ def test_breaker_settings_in_the_units_the_scripts_take() -> None:
         probe_lease_ms=(2 + 5 + 1) * 1000,  # connect + first byte + a second
     )
     # Without a first-byte timeout the read timeout bounds the first byte.
-    assert BreakerSettings.of(config.breaker_for(a), a).probe_lease_ms == (3 + 60 + 1) * 1000
+    assert BreakerSettings.of(config.breaker_for(a), a).probe_lease_ms == 62_100  # 1.1 + 60 + 1
 
 
 @pytest.mark.parametrize(

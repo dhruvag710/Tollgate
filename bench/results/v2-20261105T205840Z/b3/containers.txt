@@ -1,0 +1,25 @@
+/tollgate-bench-gateway-1 image=tollgate-bench-gateway cpus=1000000000 memory=536870912 cpu.max=100000/100000
+    LOG_LEVEL=WARNING
+    WEB_CONCURRENCY=1
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-gateway-2 image=tollgate-bench-gateway cpus=1000000000 memory=536870912 cpu.max=100000/100000
+    WEB_CONCURRENCY=1
+    PROVIDERS_CONFIG=config/providers.test.yaml
+    LOG_LEVEL=WARNING
+/tollgate-bench-gateway-3 image=tollgate-bench-gateway cpus=1000000000 memory=536870912 cpu.max=100000/100000
+    LOG_LEVEL=WARNING
+    WEB_CONCURRENCY=1
+    PROVIDERS_CONFIG=config/providers.test.yaml
+/tollgate-bench-mock_provider-1 image=tollgate-bench-mock_provider cpus=1500000000 memory=536870912 cpu.max=150000/100000
+    MOCK_OUTPUT_TOKENS=32
+    MOCK_LATENCY_MS=0
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+/tollgate-bench-mock_provider_secondary-1 image=tollgate-bench-mock_provider_secondary cpus=0 memory=0 cpu.max=max/100000
+    MOCK_TTFT_MS=0
+    MOCK_TOKENS_PER_SEC=0
+    MOCK_OUTPUT_TOKENS=32
+    MOCK_LATENCY_MS=0
+/tollgate-bench-nginx-1 image=nginx:1.27-alpine cpus=500000000 memory=134217728 cpu.max=50000/100000
+/tollgate-bench-postgres-1 image=pgvector/pgvector:pg16 cpus=1000000000 memory=1073741824 cpu.max=100000/100000
+/tollgate-bench-redis-1 image=redis:7-alpine cpus=500000000 memory=268435456 cpu.max=50000/100000

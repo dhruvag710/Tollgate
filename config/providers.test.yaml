@@ -7,7 +7,7 @@ providers:
     type: openai_compat
     base_url: http://mock_provider:8001/v1
     timeout_s: 60
-    connect_timeout_s: 3
+    connect_timeout_s: 1.1
     forward_mock_headers: true
   - name: mock-secondary
     type: openai_compat

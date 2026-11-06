@@ -1,0 +1,11 @@
+ Container tollgate-bench-gateway-3 Running 
+ Container tollgate-bench-gateway-2 Running 
+ Container tollgate-bench-gateway-1 Running 
+ Container tollgate-bench-nginx-1 Running 
+ Container tollgate-bench-redis-1 Running 
+ Container tollgate-bench-postgres-1 Running 
+ Container tollgate-bench-mock_provider-1 Running 
+ Container tollgate-bench-mock_provider_secondary-1 Running 
+ Container tollgate-bench-k6-run-d32a5f7588d6 Creating 
+ Container tollgate-bench-k6-run-d32a5f7588d6 Created 
+B3: 200/s for 120s: 23831 requests, 0.000% failed, 169 not started on time, p50 3.9 ms, p99 1107.2 ms, max 1186 ms

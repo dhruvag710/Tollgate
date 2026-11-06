@@ -65,6 +65,13 @@ the providers file, and per provider. If every route is open the request gets a 
 the breakers, and the settle call each request makes counts its success.
 `GET /admin/providers` shows each breaker's state.
 
+No request ever waits on a name lookup. Each provider's hostname is looked up in the
+background every 5 s (`PROVIDER_DNS_REFRESH_S`), and new connections use the cached
+addresses. If a name stops resolving, attempts at that provider fail at once, count against
+its breaker, and move on to the next provider. If the resolver stops answering, the cached
+addresses stay in use. Connecting times out after 1.1 s (`connect_timeout_s` in the
+providers file).
+
 ### Exact-match cache
 
 A request whose answer shouldn't vary can be answered from Redis: temperature at most
@@ -234,12 +241,12 @@ environment, method, ranges across runs and the raw k6 output.
 | Added time to first chunk at 100 RPS, streamed | 1.13 ms p50, 10.56 ms p99 |
 | Max sustained throughput (p99 overhead ≤ 50 ms) | 250 RPS with 1 replica, 275 RPS with 3 |
 
-At 100 RPS both p99s are within SPEC's 20 ms target. **B3** (failover with the primary
-killed) and **B5** (the cache's impact) are also in BENCHMARKS.md. Both miss their targets,
-and both are explained there:
-- **B3:** a killed provider's name lookups held up the healthy provider's, and requests failed.
-  Reaching the providers by IP address, none did.
-- **B5:** the semantic layer's miss path is over its 25 ms budget. One replica can't sustain SPEC's
+At 100 RPS both p99s are within SPEC's 20 ms target. BENCHMARKS.md also has:
+- **B3**, failover with the primary killed: no request failed in 5 runs at 200 RPS and 1 at
+  300. Until the primary's breaker opens, about 6 s after the kill, each request waits out the
+  1.1 s connect timeout, then succeeds on the secondary.
+- **B5**, the cache's impact: the semantic layer adds 2.6 points of hit rate on B5's workload,
+  but its miss path is over its 25 ms budget, so it stays off by default. One replica can't sustain SPEC's
 500 RPS on this machine, and 3 replicas barely outscale one here. BENCHMARKS.md has the
 details, including how a cheaper healthcheck took the p99s down from 43 ms and 142 ms.
 

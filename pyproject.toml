@@ -11,6 +11,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
+    # Its network backend API: providers/resolver.py connects through a cache of
+    # addresses, so no request waits on a name lookup.
+    "httpcore>=1.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pyyaml>=6.0",

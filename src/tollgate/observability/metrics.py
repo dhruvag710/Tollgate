@@ -158,6 +158,14 @@ class Metrics:
             ["pool"],
             registry=registry,
         )
+        self.provider_lookups = Counter(
+            "tollgate_provider_lookups",
+            "Background lookups of provider hostnames, by host and result: ok, gone (the "
+            "name doesn't exist: attempts fail at once) or no_answer (the resolver gave "
+            "none: the known addresses stay in use).",
+            ["host", "result"],
+            registry=registry,
+        )
         self.breaker_transitions = Counter(
             "tollgate_breaker_transitions",
             "Circuit breaker state changes this replica made, by the state entered. The "
@@ -201,6 +209,10 @@ class Metrics:
         if found.score is not None or (found.stage == "verify" and found.outcome != "full"):
             check = timings.seconds("semantic-verify-wait") + timings.seconds("semantic-verify")
             self.semantic_seconds.labels("check").observe(check)
+
+    def provider_lookup(self, host: str, result: str) -> None:
+        """A background lookup. Hosts come from the providers file, a fixed set."""
+        self.provider_lookups.labels(host, result).inc()
 
     def breaker_transition(self, provider: str, state: str) -> None:
         self.breaker_transitions.labels(

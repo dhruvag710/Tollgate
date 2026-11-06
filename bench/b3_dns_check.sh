@@ -5,7 +5,9 @@
 # doesn't know goes to the host's resolver; B3 found failover slowed while
 # those lookups ran. Times LOOKUPS lookups of each name from a gateway
 # container (getent, the C library's resolver, as Python's socket module
-# uses), with the primary up and then killed, and restarts it.
+# uses), with the primary up and then killed, and restarts it. With the primary
+# killed it also runs bench/b3_lookup_backlog.py, BACKLOG lookups' worth (about a
+# minute): do lookups a caller has given up on hold up later ones?
 #
 #   bash bench/b3_dns_check.sh [OUT]   # default: bench/results/b3-dns-<UTC timestamp>.txt
 #
@@ -16,6 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
 LOOKUPS=${LOOKUPS:-5}
+BACKLOG=${BACKLOG:-24}
 OUT=${1:-bench/results/b3-dns-$(date -u +%Y%m%dT%H%M%SZ).txt}
 BASE=(docker compose -p tollgate-bench -f docker-compose.yml -f docker-compose.scale.yml
       -f bench/docker-compose.bench.yml)
@@ -44,6 +47,7 @@ lookups() {  # state: time each name's lookups from the gateway container
   docker kill "$primary" >/dev/null
   sleep 2
   lookups "primary-killed"
+  docker exec -i "$gateway" python - "$BACKLOG" < bench/b3_lookup_backlog.py
   docker start "$primary" >/dev/null
   for _ in $(seq 1 60); do
     [ "$(docker inspect --format '{{.State.Health.Status}}' "$primary")" = healthy ] && break
